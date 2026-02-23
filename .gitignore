@@ -1,0 +1,11 @@
+# IDE and environment files
+.idea/
+.venv/
+
+# Configuration files with sensitive data
+config.py
+credentials.json
+
+# Python cache
+__pycache__/
+*.pyc
