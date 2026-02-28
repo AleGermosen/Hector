@@ -6,6 +6,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 from datetime import datetime
 import os
 import json
+import operator
 
 # Enable logging
 logging.basicConfig(
@@ -101,7 +102,23 @@ async def calculate_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error calculating balance: {str(e)}")
 
-# 3. Bot Initialization
+# 3. Calculator Logic
+async def calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    expression = " ".join(context.args)
+    if not expression:
+        await update.message.reply_text("❌ Usage: /calc [expression]\nExample: /calc 10 + 5 * 2")
+        return
+
+    try:
+        # Using eval() can be dangerous if input is not sanitized.
+        # For a simple calculator, this might be acceptable, but for production
+        # systems, consider using a safer math expression parser.
+        result = eval(expression)
+        await update.message.reply_text(f"🔢 Result: {expression} = {result}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error in calculation: {str(e)}")
+
+# 4. Bot Initialization
 if __name__ == '__main__':
     # Get the bot token from the environment variable
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -113,9 +130,11 @@ if __name__ == '__main__':
     # Add handlers
     balance_handler = CommandHandler('balance', calculate_balance)
     finance_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_finance)
+    calculator_handler = CommandHandler('calc', calculator) # New calculator handler
     
     application.add_handler(balance_handler)
     application.add_handler(finance_handler)
+    application.add_handler(calculator_handler) # Register the new handler
 
     print("Bot is running...")
     application.run_polling()
