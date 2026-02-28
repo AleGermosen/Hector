@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 from datetime import datetime
 import os
 import json
-import operator
+import asyncio
 
 # Enable logging
 logging.basicConfig(
@@ -14,127 +14,150 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# 1. Setup Google Sheets using Environment Variables
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# Get the credentials from the environment variable
-gspread_creds_json = os.environ.get('GSPREAD_CREDENTIALS')
-if not gspread_creds_json:
-    raise ValueError("The GSPREAD_CREDENTIALS environment variable is not set.")
 
-# Parse the JSON string into a dictionary
-creds_dict = json.loads(gspread_creds_json)
+class FinanceBot:
+    def __init__(self, token, google_creds_json, user_mapping):
+        self.token = token
+        creds_dict = json.loads(google_creds_json)
+        self.creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        self.client = gspread.authorize(self.creds)
 
-# Authorize the client
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
-sheet = client.open("Personal Finances v2").sheet1  # Make sure the name matches exactly
+        # user_mapping is a dict: {"TELEGRAM_ID": "SPREADSHEET_NAME_OR_ID"}
+        self.user_mapping = user_mapping
+
+        self.application = ApplicationBuilder().token(self.token).build()
+
+        # Add handlers
+        self.application.add_handler(CommandHandler('start', self.start_cmd))
+        self.application.add_handler(CommandHandler('balance', self.calculate_balance))
+        self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_finance))
+        self.application.add_handler(CommandHandler('calc', self.calculator))
+
+    def get_user_sheet(self, user_id):
+        """Helper to find the right sheet for the user ID"""
+        sheet_identifier = self.user_mapping.get(str(user_id))
+        if not sheet_identifier:
+            return None
+
+        # This opens the sheet dynamically.
+        # For better performance with many users, you could cache these objects.
+        try:
+            return self.client.open(sheet_identifier).sheet1
+        except Exception as e:
+            logging.error(f"Could not open sheet for user {user_id}: {e}")
+            return None
+
+    async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.from_user.id
+        if str(user_id) in self.user_mapping:
+            await update.message.reply_text(f"Welcome back! Your ID is `{user_id}` and your sheet is linked.",
+                                            parse_mode='Markdown')
+        else:
+            await update.message.reply_text(f"Hello! You are not authorized. Send your ID to the admin: `{user_id}`",
+                                            parse_mode='Markdown')
+
+    async def handle_finance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.from_user.id
+        sheet = self.get_user_sheet(user_id)
+
+        if not sheet:
+            await update.message.reply_text("❌ Error: You are not authorized or your sheet wasn't found.")
+            return
+
+        text = update.message.text
+        try:
+            parts = text.split(maxsplit=4)
+            if len(parts) < 4: raise ValueError("Missing arguments")
+
+            trans_type = parts[0].capitalize()
+            if trans_type.lower() not in ['income', 'expense']:
+                raise ValueError("Start with Income or Expense")
+
+            account, amount, category = parts[1].capitalize(), float(parts[2]), parts[3]
+            description = parts[4] if len(parts) > 4 else ""
+            date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: sheet.append_row(
+                [date, trans_type, account, amount, category, description]))
+
+            await update.message.reply_text(f"✅ Logged to your sheet: {trans_type} ${amount}")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Usage: [Income/Expense] [Account] [Amount] [Category] [Description]")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Sheet Error: {str(e)}")
+
+    async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.from_user.id
+        sheet = self.get_user_sheet(user_id)
+
+        if not sheet:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            records = await loop.run_in_executor(None, sheet.get_all_values)
+
+            balances = {}
+            for row in records:
+                if len(row) < 4: continue
+                try:
+                    trans_type, account, amount = row[1].capitalize(), row[2].capitalize(), float(row[3])
+                except ValueError:
+                    continue
+
+                balances[account] = balances.get(account, 0.0) + (amount if trans_type == 'Income' else -amount)
+
+            response = "💰 **Your Account Balances:**\n"
+            for acc, bal in balances.items():
+                response += f"{acc}: ${bal:.2f}\n"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        expression = " ".join(context.args)
+        try:
+            result = eval(expression, {"__builtins__": {}}, {})  # Basic sandbox
+            await update.message.reply_text(f"🔢 Result: {result}")
+        except:
+            await update.message.reply_text("❌ Invalid calculation.")
+
+    async def run(self):
+        await self.application.initialize()
+        await self.application.start()
+        await self.application.updater.start_polling()
+        # Keep running
+        stop_signal = asyncio.Event()
+        await stop_signal.wait()
 
 
-# 2. Financial Logic
-async def handle_finance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def main():
+    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    creds = os.environ.get('GSPREAD_CREDENTIALS')
+    # Format: {"123456": "My Sheet Name", "789012": "Friend Sheet Name"}
+    mapping_str = os.environ.get('USER_SHEET_MAPPING', '{}')
+
     try:
-        # Parse input: Type Account Amount Category [Description]
-        parts = text.split(maxsplit=4)
-        
-        if len(parts) < 4:
-            raise ValueError("Missing arguments")
+        user_mapping = json.loads(mapping_str)
+    except:
+        logging.error("USER_SHEET_MAPPING is not valid JSON")
+        user_mapping = {}
 
-        trans_type = parts[0].capitalize()
-        if trans_type.lower() not in ['income', 'expense']:
-             raise ValueError("Start with Income or Expense")
+    if token and creds:
+        bot = FinanceBot(token, creds, user_mapping)
+        logging.info("Bot starting...")
+        await bot.run()
+    else:
+        logging.error("Missing TELEGRAM_BOT_TOKEN or GSPREAD_CREDENTIALS")
 
-        account = parts[1].capitalize()
-        
-        amount = float(parts[2])
-        category = parts[3]
-        description = parts[4] if len(parts) > 4 else ""
-        
-        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Append to Google Sheet
-        sheet.append_row([date, trans_type, account, amount, category, description])
-
-        await update.message.reply_text(f"✅ Logged: {trans_type} ({account}) ${amount} - {category} ({description})")
-    except ValueError:
-        await update.message.reply_text("❌ Usage: [Income/Expense] [Account] [Amount] [Category] [Description]\nExample: Expense Cash 50 Medicine Cough Syrup")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-
-async def calculate_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        # Fetch all records
-        records = sheet.get_all_values()
-        
-        balances = {}
-        
-        # Start from the second row if there's a header, otherwise first
-        # For safety, we'll check if the amount is a valid number
-        for row in records:
-            if len(row) < 4: continue
-            
-            trans_type = row[1].capitalize()
-            account = row[2].capitalize()
-            try:
-                amount = float(row[3])
-            except ValueError:
-                continue # Skip header or invalid amount row
-            
-            if account not in balances:
-                balances[account] = 0.0
-            
-            if trans_type == 'Income':
-                balances[account] += amount
-            elif trans_type == 'Expense':
-                balances[account] -= amount
-                
-        response = "💰 **Account Balances:**\n"
-        total = 0
-        for acc, bal in balances.items():
-            response += f"{acc}: ${bal:.2f}\n"
-            total += bal
-            
-        response += f"\n**Total Net Worth:** ${total:.2f}"
-        
-        await update.message.reply_text(response, parse_mode='Markdown')
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error calculating balance: {str(e)}")
-
-# 3. Calculator Logic
-async def calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    expression = " ".join(context.args)
-    if not expression:
-        await update.message.reply_text("❌ Usage: /calc [expression]\nExample: /calc 10 + 5 * 2")
-        return
-
-    try:
-        # Using eval() can be dangerous if input is not sanitized.
-        # For a simple calculator, this might be acceptable, but for production
-        # systems, consider using a safer math expression parser.
-        result = eval(expression)
-        await update.message.reply_text(f"🔢 Result: {expression} = {result}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error in calculation: {str(e)}")
-
-# 4. Bot Initialization
 if __name__ == '__main__':
-    # Get the bot token from the environment variable
-    TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-    if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("The TELEGRAM_BOT_TOKEN environment variable is not set.")
-
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # Add handlers
-    balance_handler = CommandHandler('balance', calculate_balance)
-    finance_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_finance)
-    calculator_handler = CommandHandler('calc', calculator) # New calculator handler
-    
-    application.add_handler(balance_handler)
-    application.add_handler(finance_handler)
-    application.add_handler(calculator_handler) # Register the new handler
-
-    print("Bot is running...")
-    application.run_polling()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
