@@ -77,16 +77,29 @@ class FinanceBot:
 
             account, amount, category = parts[1].capitalize(), float(parts[2]), parts[3]
             description = parts[4] if len(parts) > 4 else ""
-            date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 
+            row_to_insert = [date, trans_type, account, amount, category, description]
+
+            # --- NEW LOGIC TO FIND THE REAL LAST ROW ---
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: sheet.append_row(
-                [date, trans_type, account, amount, category, description]))
+
+            def safe_append():
+                # Get all values in Column A to find the true end of the list
+                col_a = sheet.col_values(1)
+                next_row = len(col_a) + 1
+                # Update the specific range instead of using append_row
+                # This ignores charts/data in other columns
+                sheet.insert_row(row_to_insert, index=next_row)
+
+            await loop.run_in_executor(None, safe_append)
+            # ------------------------------------------
 
             await update.message.reply_text(f"✅ Logged to your sheet: {trans_type} ${amount}")
         except ValueError as e:
             await update.message.reply_text(f"❌ Usage: [Income/Expense] [Account] [Amount] [Category] [Description]")
         except Exception as e:
+            logging.error(f"Sheet Error: {e}")
             await update.message.reply_text(f"❌ Sheet Error: {str(e)}")
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
