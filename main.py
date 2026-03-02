@@ -92,8 +92,11 @@ class FinanceBot:
                 # This ignores charts/data in other columns
                 sheet.insert_row(row_to_insert, index=next_row)
 
-            await loop.run_in_executor(None, safe_append)
-            # ------------------------------------------
+            # Change this part in your handle_finance method
+            await loop.run_in_executor(None, lambda: sheet.append_row(
+                [date, trans_type, account, amount, category, description],
+                value_input_option='USER_ENTERED'  # This is the magic line
+            ))
 
             await update.message.reply_text(f"✅ Logged to your sheet: {trans_type} ${amount}")
         except ValueError as e:
