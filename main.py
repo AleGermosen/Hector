@@ -77,28 +77,31 @@ class FinanceBot:
 
             account, amount, category = parts[1].capitalize(), float(parts[2]), parts[3]
             description = parts[4] if len(parts) > 4 else ""
-            date = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 
+            # Using a slightly simpler date format that Google Sheets likes
+            date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row_to_insert = [date, trans_type, account, amount, category, description]
 
-            # --- NEW LOGIC TO FIND THE REAL LAST ROW ---
             loop = asyncio.get_running_loop()
 
-            def safe_append():
-                # Get all values in Column A to find the true end of the list
-                col_a = sheet.col_values(1)
-                next_row = len(col_a) + 1
-                # Update the specific range instead of using append_row
-                # This ignores charts/data in other columns
-                sheet.insert_row(row_to_insert, index=next_row)
+            def perform_insert():
+                # 1. Find the first truly empty row based ONLY on Column A
+                # This prevents jumping past your table/charts
+                existing_data = sheet.col_values(1)
+                next_row_index = len(existing_data) + 1
 
-            # Change this part in your handle_finance method
-            await loop.run_in_executor(None, lambda: sheet.append_row(
-                [date, trans_type, account, amount, category, description],
-                value_input_option='USER_ENTERED'  # This is the magic line
-            ))
+                # 2. Insert the row at that specific position
+                # USER_ENTERED ensures it picks up the Table's formatting/styles
+                sheet.insert_row(
+                    row_to_insert,
+                    index=next_row_index,
+                    value_input_option='USER_ENTERED'
+                )
 
-            await update.message.reply_text(f"✅ Logged to your sheet: {trans_type} ${amount}")
+            await loop.run_in_executor(None, perform_insert)
+
+            await update.message.reply_text(
+                f"✅ Logged to your sheet at row {len(sheet.col_values(1))}: {trans_type} ${amount}")
         except ValueError as e:
             await update.message.reply_text(f"❌ Usage: [Income/Expense] [Account] [Amount] [Category] [Description]")
         except Exception as e:
