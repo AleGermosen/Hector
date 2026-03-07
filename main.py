@@ -254,7 +254,8 @@ class FinanceBot:
                         row_date_str = row[0]
                         row_date = None
                         # Try parsing with both formats that might be in the sheet
-                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                        # for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                        for fmt in ("%m-%d-%Y %H:%M:%S", "%Y-%m-%d"):
                             try:
                                 row_date = datetime.strptime(row_date_str, fmt)
                                 break # Found a valid format
