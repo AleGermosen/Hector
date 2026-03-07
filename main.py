@@ -11,6 +11,10 @@ import os
 import json
 import asyncio
 import re # For ingredient parsing
+import matplotlib
+matplotlib.use('Agg') # Use non-interactive backend
+import matplotlib.pyplot as plt
+import io
 
 # ==================================================================================================
 # LOGGING CONFIGURATION
@@ -68,6 +72,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('start', self.start_cmd))
         self.application.add_handler(CommandHandler('balance', self.calculate_balance))
         self.application.add_handler(CommandHandler('calc', self.calculator))
+        self.application.add_handler(CommandHandler('expenses', self.generate_expenses_chart))
         # Handle text messages that are NOT commands (for logging transactions)
         self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_finance))
 
@@ -85,6 +90,25 @@ class FinanceBot:
         except Exception as e:
             logger.error(f"Could not open sheet for user {user_id}: {e}")
             return None
+
+    def _parse_month(self, text):
+        """Parses a month name or abbreviation into a month number (1-12)."""
+        text = text.lower().strip()
+        months = {
+            'jan': 1, 'january': 1,
+            'feb': 2, 'february': 2,
+            'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4,
+            'may': 5,
+            'jun': 6, 'june': 6,
+            'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8,
+            'sep': 9, 'september': 9,
+            'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11,
+            'dec': 12, 'december': 12
+        }
+        return months.get(text) or months.get(text[:3])
 
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for /start command."""
@@ -189,6 +213,109 @@ class FinanceBot:
             await update.message.reply_text(f"🔢 Result: {result}")
         except:
             await update.message.reply_text("❌ Invalid calculation.")
+
+    async def generate_expenses_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generates a pie chart of expenses categorized by Needs, Wants, Savings, Debt."""
+        user_id = update.message.from_user.id
+        sheet = self.get_user_sheet(user_id)
+
+        if not sheet:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+
+        target_month = None
+        target_year = datetime.now().year
+        chart_title = "Expenses Breakdown (All Time)"
+
+        if context.args:
+            arg = context.args[0]
+            target_month = self._parse_month(arg)
+            if not target_month:
+                await update.message.reply_text(f"❌ Invalid month: {arg}")
+                return
+            # Get month name for title
+            month_name = datetime(target_year, target_month, 1).strftime("%B")
+            chart_title = f"Expenses Breakdown ({month_name} {target_year})"
+
+        try:
+            loop = asyncio.get_running_loop()
+            records = await loop.run_in_executor(None, sheet.get_all_values)
+
+            categories = {'Needs': 0.0, 'Wants': 0.0, 'Savings': 0.0, 'Debt': 0.0}
+            
+            # Skip header row if present, assuming first row is header
+            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
+
+            for row in records[start_index:]:
+                if len(row) < 5: continue
+                try:
+                    # Date filtering
+                    if target_month:
+                        row_date_str = row[0]
+                        try:
+                            row_date = datetime.strptime(row_date_str, "%Y-%m-%d %H:%M:%S")
+                            if row_date.month != target_month or row_date.year != target_year:
+                                continue
+                        except ValueError:
+                            continue # Skip rows with invalid dates if filtering
+
+                    # Assuming columns: Date, Type, Account, Amount, Category
+                    trans_type = row[1].capitalize()
+                    if trans_type != 'Expense':
+                        continue
+                        
+                    amount = float(row[3])
+                    category = row[4].capitalize()
+                    
+                    # Normalize category names
+                    if category in categories:
+                        categories[category] += amount
+                    else:
+                        # Try to match case-insensitive
+                        match = next((k for k in categories.keys() if k.lower() == category.lower()), None)
+                        if match:
+                            categories[match] += amount
+                        # Else ignore or add to 'Other' if desired, but user asked for specific categories
+                except ValueError:
+                    continue
+
+            # Filter out zero values
+            labels = [k for k, v in categories.items() if v > 0]
+            sizes = [v for k, v in categories.items() if v > 0]
+            total_expenses = sum(sizes)
+
+            if not sizes:
+                msg = "No expenses found in the specified categories"
+                if target_month:
+                    msg += f" for {chart_title}"
+                msg += "."
+                await update.message.reply_text(msg)
+                return
+
+            # Create Pie Chart
+            fig, ax = plt.subplots()
+            ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+            ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            plt.title(chart_title)
+
+            # Save to buffer
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png')
+            buf.seek(0)
+            plt.close(fig)
+
+            # Generate text breakdown
+            breakdown_text = f"📊 **{chart_title}:**\n"
+            for label, size in zip(labels, sizes):
+                percentage = (size / total_expenses) * 100
+                breakdown_text += f"- **{label}**: ${size:.2f} ({percentage:.1f}%)\n"
+            breakdown_text += f"\n**Total Expenses**: ${total_expenses:.2f}"
+
+            await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Chart Error: {e}")
+            await update.message.reply_text(f"❌ Error generating chart: {str(e)}")
 
     async def start(self):
         """Starts the bot polling."""
