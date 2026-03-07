@@ -252,12 +252,18 @@ class FinanceBot:
                     # Date filtering
                     if target_month:
                         row_date_str = row[0]
-                        try:
-                            row_date = datetime.strptime(row_date_str, "%Y-%m-%d %H:%M:%S")
-                            if row_date.month != target_month or row_date.year != target_year:
-                                continue
-                        except ValueError:
-                            continue # Skip rows with invalid dates if filtering
+                        row_date = None
+                        # Try parsing with both formats that might be in the sheet
+                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                            try:
+                                row_date = datetime.strptime(row_date_str, fmt)
+                                break # Found a valid format
+                            except ValueError:
+                                continue # Try next format
+                        
+                        # If parsing failed for all formats, or if date doesn't match, skip row
+                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
+                            continue
 
                     # Assuming columns: Date, Type, Account, Amount, Category
                     trans_type = row[1].capitalize()
@@ -287,7 +293,8 @@ class FinanceBot:
             if not sizes:
                 msg = "No expenses found in the specified categories"
                 if target_month:
-                    msg += f" for {chart_title}"
+                    month_name = datetime(target_year, target_month, 1).strftime("%B")
+                    msg += f" for {month_name} {target_year}"
                 msg += "."
                 await update.message.reply_text(msg)
                 return
