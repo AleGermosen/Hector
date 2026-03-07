@@ -50,11 +50,12 @@ class FinanceBot:
     """
     Bot 1: Handles finance tracking, logging expenses/income to Google Sheets.
     """
-    def __init__(self, token, google_client, user_mapping):
+    def __init__(self, token, google_client, user_mapping, strict_users=None):
         self.token = token
         self.client = google_client
         # user_mapping: {"TELEGRAM_ID": "SPREADSHEET_NAME_OR_ID"}
         self.user_mapping = user_mapping
+        self.strict_users = strict_users or []
         
         # Initialize the Telegram Application
         self.application = ApplicationBuilder().token(self.token).build()
@@ -116,6 +117,17 @@ class FinanceBot:
 
             account, amount, category = parts[1].capitalize(), float(parts[2]), parts[3]
             description = parts[4] if len(parts) > 4 else ""
+
+            if str(user_id) in self.strict_users and trans_type == 'Expense':
+                allowed_categories = ['Needs', 'Wants', 'Savings', 'Debt']
+                match = next((ac for ac in allowed_categories if ac.lower() == category.lower()), None)
+                if match:
+                    category = match
+                else:
+                    await update.message.reply_text(
+                        f"❌ Invalid category. Allowed: {', '.join(allowed_categories)}"
+                    )
+                    return
 
             date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row_to_insert = [date, trans_type, account, amount, category, description]
@@ -424,6 +436,7 @@ async def main():
     production_creds_json = os.environ.get('PRODUCTION_GSPREAD_CREDENTIALS')
 
     finance_user_mapping_str = os.environ.get('USER_SHEET_MAPPING', '{}')
+    strict_users_str = os.environ.get('STRICT_MODE_USERS', '[]')
     production_sheet_id = os.environ.get('PRODUCTION_SHEET_ID')
 
     # 2. Initialize Google Clients for each bot
@@ -437,13 +450,19 @@ async def main():
         logger.error("USER_SHEET_MAPPING is not valid JSON")
         finance_user_mapping = {}
 
+    try:
+        strict_users = json.loads(strict_users_str)
+    except:
+        logger.error("STRICT_MODE_USERS is not valid JSON")
+        strict_users = []
+
     bots = []
 
     # 4. Initialize FinanceBot
     if finance_token:
         if not finance_google_client:
             logger.warning("FinanceBot is enabled but GSPREAD_CREDENTIALS are missing or invalid. Google Sheets features will be disabled.")
-        finance_bot = FinanceBot(finance_token, finance_google_client, finance_user_mapping)
+        finance_bot = FinanceBot(finance_token, finance_google_client, finance_user_mapping, strict_users)
         bots.append(finance_bot)
     else:
         logger.error("TELEGRAM_BOT_TOKEN missing. FinanceBot will not run.")
