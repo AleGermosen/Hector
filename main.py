@@ -556,28 +556,20 @@ class ProductionBot:
                 # Test B: Open specific sheet
                 if self.production_sheet_id:
                     status_msg.append(f"\n🎯 **Testing Target Connection...**")
-                    sheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id).sheet1)
-                    status_msg.append(f"✅ Success! Connected to: '{sheet.title}'")
+                    spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
+                    status_msg.append(f"✅ Success! Connected to spreadsheet: '{spreadsheet.title}'")
                     
             except Exception as e:
                 status_msg.append(f"❌ Connection Failed: {str(e)}")
         
         await update.message.reply_text("\n".join(status_msg), parse_mode='Markdown')
 
-    def get_production_sheet(self):
-        """Helper to get the production log sheet."""
-        if not self.client:
-            logger.error("ProductionBot: Google client is not available.")
-            return None
-        if not self.production_sheet_id:
-            logger.error("PRODUCTION_SHEET_ID is not set.")
-            return None
+    def _get_or_create_worksheet(self, spreadsheet, title):
+        """Gets a worksheet by title, creating it if it doesn't exist."""
         try:
-            # Assuming the first worksheet is the one for logs
-            return self.client.open_by_key(self.production_sheet_id).sheet1
-        except Exception as e:
-            logger.error(f"Could not open production sheet {self.production_sheet_id}: {e}")
-            return None
+            return spreadsheet.worksheet(title)
+        except gspread.WorksheetNotFound:
+            return spreadsheet.add_worksheet(title=title, rows="100", cols="20")
 
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for the /start command."""
@@ -675,9 +667,8 @@ class ProductionBot:
         # Finalize and log to Google Sheet
         await update.message.reply_text("All details collected. Logging to Google Sheet...")
         
-        sheet = self.get_production_sheet()
-        if not sheet:
-            await update.message.reply_text("❌ Error: Could not access the production sheet. Log not saved.")
+        if not self.client or not self.production_sheet_id:
+            await update.message.reply_text("❌ Error: Production sheet details are not configured. Log not saved.")
             context.user_data.pop('log_data', None)
             return ConversationHandler.END
 
@@ -689,25 +680,31 @@ class ProductionBot:
         weighed_by = log_data['weighed_by']
         received_by = log_data['received_by']
 
-        rows_to_insert = []
-        if not log_data['ingredients']:
-            # If no ingredients were added, log a single row with empty ingredient fields
-            rows_to_insert.append([
-                date, product_name, batch_code, "", "", "",
-                total_gallons, weighed_by, received_by
-            ])
-        else:
-            for ingredient in log_data['ingredients']:
-                rows_to_insert.append([
-                    date, product_name, batch_code,
-                    ingredient['name'], ingredient['amount'], ingredient['unit'],
-                    total_gallons, weighed_by, received_by
-                ])
-        
+        # Sanitize product_name for worksheet title
+        sanitized_product_name = re.sub(r'[^\w\s-]', '', product_name)
+        worksheet_title = f"{date} - {sanitized_product_name}"
+
         try:
             loop = asyncio.get_running_loop()
+            spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
+            sheet = await loop.run_in_executor(None, lambda: self._get_or_create_worksheet(spreadsheet, worksheet_title))
+
+            rows_to_insert = []
+            if not log_data['ingredients']:
+                rows_to_insert.append([
+                    date, product_name, batch_code, "", "", "",
+                    total_gallons, weighed_by, received_by
+                ])
+            else:
+                for ingredient in log_data['ingredients']:
+                    rows_to_insert.append([
+                        date, product_name, batch_code,
+                        ingredient['name'], ingredient['amount'], ingredient['unit'],
+                        total_gallons, weighed_by, received_by
+                    ])
+            
             await loop.run_in_executor(None, lambda: self._insert_production_rows(sheet, rows_to_insert))
-            await update.message.reply_text("✅ Production log successfully saved to Google Sheet!")
+            await update.message.reply_text(f"✅ Production log successfully saved to sheet: '{worksheet_title}'!")
         except Exception as e:
             logger.error(f"Error saving production log to sheet: {e}")
             await update.message.reply_text(f"❌ Error saving production log: {str(e)}")
@@ -717,8 +714,15 @@ class ProductionBot:
 
     def _insert_production_rows(self, sheet, rows_data):
         """Helper to insert multiple rows into the production sheet (blocking)."""
-        existing_data = sheet.col_values(1)
-        next_row_index = len(existing_data) + 1
+        # Check if sheet is empty to add headers
+        existing_data = sheet.get_all_values()
+        if not existing_data:
+            headers = ["Date", "Product Name", "Batch Code", "Ingredient Name", "Amount", "Unit", "Total Gallons", "Weighed By", "Received By"]
+            sheet.insert_row(headers, index=1)
+            next_row_index = 2
+        else:
+            next_row_index = len(existing_data) + 1
+
         sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
 
 
