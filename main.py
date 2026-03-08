@@ -508,31 +508,61 @@ class ProductionBot:
         self.application.add_handler(conv_handler)
 
     async def check_sheet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Checks connectivity to the Google Sheet."""
+        """Checks connectivity to the Google Sheet with detailed diagnostics."""
         status_msg = []
         
-        # Check Client
+        # 1. Check Client and Email
         if self.client:
-            status_msg.append("✅ Google Client: Initialized")
+            try:
+                # Try to get email from credentials
+                email = "Unknown"
+                if hasattr(self.client.auth, 'service_account_email'):
+                    email = self.client.auth.service_account_email
+                elif hasattr(self.client.auth, 'signer_email'):
+                    email = self.client.auth.signer_email
+                
+                status_msg.append(f"🤖 **Bot Email**: `{email}`")
+            except Exception as e:
+                status_msg.append(f"✅ Client: Initialized (Email fetch error: {e})")
         else:
-            status_msg.append("❌ Google Client: Not Initialized (Check Credentials)")
+            status_msg.append("❌ Client: Not Initialized")
             
-        # Check Sheet ID
+        # 2. Check Sheet ID format
         if self.production_sheet_id:
-            status_msg.append(f"✅ Sheet ID: Set ({self.production_sheet_id[:5]}...)")
+            clean_id = self.production_sheet_id.strip()
+            status_msg.append(f"🆔 **Target Sheet ID**: `{clean_id}`")
+            if len(self.production_sheet_id) != len(clean_id):
+                 status_msg.append("⚠️ **WARNING**: ID has leading/trailing whitespace!")
         else:
             status_msg.append("❌ Sheet ID: Not Set")
             
-        # Try Connection
-        if self.client and self.production_sheet_id:
+        # 3. Connectivity Tests
+        if self.client:
             try:
                 loop = asyncio.get_running_loop()
-                sheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id).sheet1)
-                status_msg.append(f"✅ Connection: Success (Sheet: '{sheet.title}')")
+                
+                # Test A: List all accessible sheets
+                status_msg.append("\n🔍 **Scanning accessible sheets...**")
+                try:
+                    spreadsheets = await loop.run_in_executor(None, self.client.openall)
+                    if spreadsheets:
+                        titles = [s.title for s in spreadsheets]
+                        status_msg.append(f"📚 Found {len(spreadsheets)} sheets: {', '.join(titles)}")
+                    else:
+                        status_msg.append("📭 No sheets found. (Did you share the sheet with the Bot Email?)")
+                except Exception as e:
+                    status_msg.append(f"❌ List Error: {str(e)}")
+
+                # Test B: Open specific sheet
+                if self.production_sheet_id:
+                    status_msg.append(f"\n🎯 **Testing Target Connection...**")
+                    sheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id).sheet1)
+                    status_msg.append(f"✅ Success! Connected to: '{sheet.title}'")
+                    
             except Exception as e:
-                status_msg.append(f"❌ Connection: Failed ({str(e)})")
+                status_msg.append(f"❌ Connection Failed: {str(e)}")
         
-        await update.message.reply_text("\n".join(status_msg))
+        await update.message.reply_text("\n".join(status_msg), parse_mode='Markdown')
 
     def get_production_sheet(self):
         """Helper to get the production log sheet."""
