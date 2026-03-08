@@ -70,9 +70,11 @@ class FinanceBot:
     def _register_handlers(self):
         """Registers all command and message handlers for this bot."""
         self.application.add_handler(CommandHandler('start', self.start_cmd))
+        self.application.add_handler(CommandHandler('help', self.help_cmd))
         self.application.add_handler(CommandHandler('balance', self.calculate_balance))
         self.application.add_handler(CommandHandler('calc', self.calculator))
         self.application.add_handler(CommandHandler('expenses', self.generate_expenses_chart))
+        self.application.add_handler(CommandHandler('net', self.calculate_net_worth))
         # Handle text messages that are NOT commands (for logging transactions)
         self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_finance))
 
@@ -110,6 +112,48 @@ class FinanceBot:
         }
         return months.get(text) or months.get(text[:3])
 
+    def _parse_date_robust(self, date_str):
+        """Tries to parse a date string using multiple common formats."""
+        if not date_str:
+            return None
+        date_str = date_str.strip()
+        
+        # List of formats to try
+        formats = [
+            "%Y-%m-%d %H:%M:%S", # The format we upload
+            "%Y-%m-%d",          # ISO Date
+            "%m/%d/%Y %H:%M:%S", # US Locale
+            "%m/%d/%Y",          # US Date
+            "%d/%m/%Y %H:%M:%S", # EU Locale
+            "%d/%m/%Y"           # EU Date
+        ]
+        
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        
+        # Fallback: Try slicing the first 10 chars if it looks like ISO
+        if len(date_str) >= 10:
+            try:
+                return datetime.strptime(date_str[:10], "%Y-%m-%d")
+            except ValueError:
+                pass
+                
+        return None
+
+    def _parse_amount_robust(self, amount_str):
+        """Parses amount string, handling currency symbols and commas."""
+        if not amount_str:
+            return 0.0
+        try:
+            # Remove currency symbols and commas
+            clean_str = amount_str.replace('$', '').replace(',', '').strip()
+            return float(clean_str)
+        except ValueError:
+            return 0.0
+
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for /start command."""
         user_id = update.message.from_user.id
@@ -119,6 +163,25 @@ class FinanceBot:
         else:
             await update.message.reply_text(f"Hello! You are not authorized. Send your ID to the admin: `{user_id}`",
                                             parse_mode='Markdown')
+
+    async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Displays a help message with all available commands."""
+        help_text = (
+            "Here are the commands you can use:\n\n"
+            "**Finance Logging:**\n"
+            "To log a transaction, send a message in the format:\n"
+            "`[Type] [Account] [Amount] [Category] [Description]`\n"
+            "Example: `Expense Cash 15.50 Needs Lunch with colleagues`\n\n"
+            "**Commands:**\n"
+            "/start - Welcome message and check authorization.\n"
+            "/help - Shows this help message.\n"
+            "/balance - Calculates and shows your current account balances.\n"
+            "/expenses - Generates a pie chart of all your expenses.\n"
+            "/expenses [month] - Generates a pie chart for a specific month (e.g., `/expenses january`).\n"
+            "/net - Shows your net worth (Income vs Expenses).\n"
+            "/calc [expression] - A simple calculator (e.g., `/calc 5 * 2`)."
+        )
+        await update.message.reply_text(help_text, parse_mode='Markdown')
 
     async def handle_finance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Parses text messages to log income/expenses."""
@@ -153,6 +216,7 @@ class FinanceBot:
                     )
                     return
 
+            # Use full timestamp for precision
             date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row_to_insert = [date, trans_type, account, amount, category, description]
 
@@ -192,7 +256,10 @@ class FinanceBot:
                 if len(row) < 4: continue
                 try:
                     # Assuming columns: Date, Type, Account, Amount
-                    trans_type, account, amount = row[1].capitalize(), row[2].capitalize(), float(row[3])
+                    trans_type = row[1].strip().capitalize()
+                    account = row[2].strip().capitalize()
+                    amount = self._parse_amount_robust(row[3])
+                    
                     balances[account] = balances.get(account, 0.0) + (amount if trans_type == 'Income' else -amount)
                 except ValueError:
                     continue
@@ -251,28 +318,19 @@ class FinanceBot:
                 try:
                     # Date filtering
                     if target_month:
-                        row_date_str = row[0]
-                        row_date = None
-                        # Try parsing with both formats that might be in the sheet
-                        # for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-                        for fmt in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%d"):
-                            try:
-                                row_date = datetime.strptime(row_date_str, fmt)
-                                break # Found a valid format
-                            except ValueError:
-                                continue # Try next format
+                        row_date = self._parse_date_robust(row[0])
                         
-                        # If parsing failed for all formats, or if date doesn't match, skip row
+                        # If parsing failed, or if date doesn't match, skip row
                         if row_date is None or row_date.month != target_month or row_date.year != target_year:
                             continue
 
                     # Assuming columns: Date, Type, Account, Amount, Category
-                    trans_type = row[1].capitalize()
+                    trans_type = row[1].strip().capitalize()
                     if trans_type != 'Expense':
                         continue
                         
-                    amount = float(row[3])
-                    category = row[4].capitalize()
+                    amount = self._parse_amount_robust(row[3])
+                    category = row[4].strip().capitalize()
                     
                     # Normalize category names
                     if category in categories:
@@ -324,6 +382,74 @@ class FinanceBot:
         except Exception as e:
             logger.error(f"Chart Error: {e}")
             await update.message.reply_text(f"❌ Error generating chart: {str(e)}")
+
+    async def calculate_net_worth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Calculates and displays net worth (Income vs Expenses)."""
+        user_id = update.message.from_user.id
+        sheet = self.get_user_sheet(user_id)
+
+        if not sheet:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            records = await loop.run_in_executor(None, sheet.get_all_values)
+
+            total_income = 0.0
+            total_expenses = 0.0
+            
+            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
+
+            for row in records[start_index:]:
+                if len(row) < 4: continue
+                try:
+                    trans_type = row[1].strip().capitalize()
+                    amount = self._parse_amount_robust(row[3])
+                    
+                    if trans_type == 'Income':
+                        total_income += amount
+                    elif trans_type == 'Expense':
+                        total_expenses += amount
+                except ValueError:
+                    continue
+
+            if total_income == 0:
+                await update.message.reply_text("No income recorded yet. Cannot calculate net worth.")
+                return
+
+            net_worth = total_income - total_expenses
+            expense_percentage = (total_expenses / total_income) * 100 if total_income > 0 else 0
+            net_percentage = 100 - expense_percentage
+
+            # Create Pie Chart
+            labels = ['Expenses', 'Net Worth']
+            sizes = [total_expenses, net_worth]
+            colors = ['#ff9999','#66b3ff']
+            
+            fig, ax = plt.subplots()
+            ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+            ax.axis('equal')
+            plt.title('Net Worth Breakdown (Income vs Expenses)')
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png')
+            buf.seek(0)
+            plt.close(fig)
+
+            # Generate text breakdown
+            breakdown_text = (
+                f"💰 **Net Worth Summary:**\n\n"
+                f"- **Total Income**: ${total_income:,.2f}\n"
+                f"- **Total Expenses**: ${total_expenses:,.2f} ({expense_percentage:.1f}% of income)\n\n"
+                f"**Net Worth**: **${net_worth:,.2f}** ({net_percentage:.1f}% of income remaining)"
+            )
+
+            await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Net Worth Error: {e}")
+            await update.message.reply_text(f"❌ Error calculating net worth: {str(e)}")
 
     async def start(self):
         """Starts the bot polling."""
