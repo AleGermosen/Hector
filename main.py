@@ -504,7 +504,35 @@ class ProductionBot:
         )
 
         self.application.add_handler(CommandHandler('start', self.start_cmd))
+        self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
         self.application.add_handler(conv_handler)
+
+    async def check_sheet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Checks connectivity to the Google Sheet."""
+        status_msg = []
+        
+        # Check Client
+        if self.client:
+            status_msg.append("✅ Google Client: Initialized")
+        else:
+            status_msg.append("❌ Google Client: Not Initialized (Check Credentials)")
+            
+        # Check Sheet ID
+        if self.production_sheet_id:
+            status_msg.append(f"✅ Sheet ID: Set ({self.production_sheet_id[:5]}...)")
+        else:
+            status_msg.append("❌ Sheet ID: Not Set")
+            
+        # Try Connection
+        if self.client and self.production_sheet_id:
+            try:
+                loop = asyncio.get_running_loop()
+                sheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id).sheet1)
+                status_msg.append(f"✅ Connection: Success (Sheet: '{sheet.title}')")
+            except Exception as e:
+                status_msg.append(f"❌ Connection: Failed ({str(e)})")
+        
+        await update.message.reply_text("\n".join(status_msg))
 
     def get_production_sheet(self):
         """Helper to get the production log sheet."""
