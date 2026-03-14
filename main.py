@@ -532,9 +532,13 @@ class FinanceBot:
     TOTAL_GALLONS_INPUT,
     CONFIRM_RECIPE,
     BATCH_CODE,
+    INGREDIENT_NAME,
+    INGREDIENT_AMOUNT_UNIT,
+    MORE_INGREDIENTS,
+    TOTAL_GALLONS,
     WEIGHED_BY,
     RECEIVED_BY
-) = range(7)
+) = range(11)
 
 class ProductionBot:
     """
@@ -649,6 +653,10 @@ class ProductionBot:
                 TOTAL_GALLONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
                 CONFIRM_RECIPE: [CallbackQueryHandler(self.confirm_recipe_callback)],
                 BATCH_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_batch_code)],
+                INGREDIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_name)],
+                INGREDIENT_AMOUNT_UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_amount_unit)],
+                MORE_INGREDIENTS: [CallbackQueryHandler(self.more_ingredients_callback)],
+                TOTAL_GALLONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_total_gallons)],
                 WEIGHED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_weighed_by)],
                 RECEIVED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_received_by)],
             },
@@ -752,14 +760,16 @@ class ProductionBot:
         """Starts the conversation to log a new production run by typing name."""
         context.user_data['log_data'] = {
             'date': datetime.now().strftime("%Y/%m/%d"),
+            'ingredients': []
         }
-        await update.message.reply_text("Starting a new production log. What is the **Product Name**? (e.g., Desinfectante lavanda)")
+        await update.message.reply_text("Starting a new production log. What is the **Product Name**? (e.g., Desifectante lavanda)")
         return PRODUCT_NAME
 
     async def start_known_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Starts the known product selection flow."""
         context.user_data['log_data'] = {
             'date': datetime.now().strftime("%Y/%m/%d"),
+            'ingredients': []
         }
         
         recipes = self.recipes.keys()
@@ -785,23 +795,23 @@ class ProductionBot:
         return TOTAL_GALLONS_INPUT
 
     async def get_product_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores product name and asks for total gallons."""
+        """Stores product name and checks if recipe exists."""
         product_name = update.message.text.strip()
         context.user_data['log_data']['product_name'] = product_name
         
-        # Check if we have a recipe for this product
+        # Check if we have a recipe for this product (case-insensitive)
         recipe = self.recipes.get(product_name.lower())
         
         if recipe:
             await update.message.reply_text(f"Found recipe for **{product_name}**. How many **gallons** are you producing?")
             return TOTAL_GALLONS_INPUT
         else:
+            # Fallback to manual entry if no recipe found
             await update.message.reply_text(
-                f"❌ I don't have a recipe for **{product_name}**. \n"
-                f"Available recipes: {', '.join(self.recipes.keys())}.\n"
-                f"Please type the product name again exactly or use /knownproduct."
+                f"I don't have a recipe for **{product_name}**. Proceeding with manual entry.\n"
+                f"What is the **Batch Code**?"
             )
-            return PRODUCT_NAME
+            return BATCH_CODE
 
     async def calculate_recipe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Calculates ingredient amounts based on total gallons."""
@@ -861,10 +871,73 @@ class ProductionBot:
             return ConversationHandler.END
 
     async def get_batch_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores batch code and asks for who weighed."""
+        """Stores batch code."""
         context.user_data['log_data']['batch_code'] = update.message.text.strip()
-        await update.message.reply_text("Batch code recorded. Who **weighed** the production?")
-        return WEIGHED_BY
+        
+        # Determine next step based on whether we have ingredients already (from recipe)
+        if context.user_data['log_data']['ingredients']:
+             # Recipe path: skip ingredient manual entry, go straight to who weighed
+            await update.message.reply_text("Batch code recorded. Who **weighed** the production?")
+            return WEIGHED_BY
+        else:
+             # Manual path: ask for ingredients
+            await update.message.reply_text("Batch code recorded. Now, what is the **first ingredient**? (e.g., Water)")
+            return INGREDIENT_NAME
+
+    async def get_ingredient_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stores ingredient name and asks for its amount and unit."""
+        current_ingredient_name = update.message.text.strip()
+        context.user_data['current_ingredient'] = {'name': current_ingredient_name}
+        await update.message.reply_text(
+            f"How much **{current_ingredient_name}** was used? (e.g., 500 kg or 100 lbs)"
+        )
+        return INGREDIENT_AMOUNT_UNIT
+
+    async def get_ingredient_amount_unit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stores ingredient amount and unit, then asks if there are more ingredients."""
+        text = update.message.text.strip()
+        match = re.match(r'(\d+(\.\d+)?)\s*(kg|lbs|gallons|liters|g|ml)', text, re.IGNORECASE)
+        if match:
+            amount = float(match.group(1))
+            unit = match.group(3).lower()
+            context.user_data['current_ingredient']['amount'] = amount
+            context.user_data['current_ingredient']['unit'] = unit
+            context.user_data['log_data']['ingredients'].append(context.user_data['current_ingredient'])
+            context.user_data.pop('current_ingredient') # Clear current ingredient
+
+            keyboard = [[InlineKeyboardButton("Yes, add another", callback_data='add_more_ingredients')],
+                        [InlineKeyboardButton("No, I'm done with ingredients", callback_data='no_more_ingredients')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Ingredient added. Add more ingredients?", reply_markup=reply_markup)
+            return MORE_INGREDIENTS
+        else:
+            await update.message.reply_text(
+                "Invalid format. Please provide amount and unit (e.g., 500 kg or 100 lbs)."
+            )
+            return INGREDIENT_AMOUNT_UNIT # Stay in the same state
+
+    async def more_ingredients_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles callback for adding more ingredients or moving to next step."""
+        query = update.callback_query
+        await query.answer() # Acknowledge the callback query
+
+        if query.data == 'add_more_ingredients':
+            await query.edit_message_text("Okay, what is the **next ingredient**? (e.g., Surfactant X)")
+            return INGREDIENT_NAME
+        elif query.data == 'no_more_ingredients':
+            await query.edit_message_text("No more ingredients. What is the **Total Gallons Produced** for this batch?")
+            return TOTAL_GALLONS
+
+    async def get_total_gallons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stores total gallons and asks for who weighed the production."""
+        try:
+            total_gallons = float(update.message.text.strip())
+            context.user_data['log_data']['total_gallons'] = total_gallons
+            await update.message.reply_text("Total gallons recorded. Who **weighed** the production?")
+            return WEIGHED_BY
+        except ValueError:
+            await update.message.reply_text("Please enter a valid number for total gallons.")
+            return TOTAL_GALLONS
 
     async def get_weighed_by(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stores who weighed and asks for who received."""
