@@ -75,6 +75,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('calc', self.calculator))
         self.application.add_handler(CommandHandler('expenses', self.generate_expenses_chart))
         self.application.add_handler(CommandHandler('net', self.calculate_net_worth))
+        self.application.add_handler(CommandHandler('calcExpenses', self.calc_expenses_budget))
         # Handle text messages that are NOT commands (for logging transactions)
         self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_finance))
 
@@ -179,6 +180,7 @@ class FinanceBot:
             "/expenses - Generates a pie chart of all your expenses.\n"
             "/expenses [month] - Generates a pie chart for a specific month (e.g., `/expenses january`).\n"
             "/net - Shows your net worth (Income vs Expenses).\n"
+            "/calcExpenses - Calculates how much you can spend on Needs (50%) and Wants (30%) based on your net worth.\n"
             "/calc [expression] - A simple calculator (e.g., `/calc 5 * 2`)."
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -451,6 +453,61 @@ class FinanceBot:
             logger.error(f"Net Worth Error: {e}")
             await update.message.reply_text(f"❌ Error calculating net worth: {str(e)}")
 
+    async def calc_expenses_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Calculates 50% for Needs and 30% for Wants based on net worth."""
+        user_id = update.message.from_user.id
+        sheet = self.get_user_sheet(user_id)
+
+        if not sheet:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            records = await loop.run_in_executor(None, sheet.get_all_values)
+
+            total_income = 0.0
+            total_expenses = 0.0
+            
+            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
+
+            for row in records[start_index:]:
+                if len(row) < 4: continue
+                try:
+                    trans_type = row[1].strip().capitalize()
+                    amount = self._parse_amount_robust(row[3])
+                    
+                    if trans_type == 'Income':
+                        total_income += amount
+                    elif trans_type == 'Expense':
+                        total_expenses += amount
+                except ValueError:
+                    continue
+
+            net_worth = total_income - total_expenses
+            
+            if net_worth <= 0:
+                await update.message.reply_text(f"Your net worth is ${net_worth:,.2f}. You might want to increase it before budgeting!")
+                return
+
+            needs = net_worth * 0.5
+            wants = net_worth * 0.3
+            savings = net_worth * 0.2
+
+            response = (
+                f"💰 **Budget Allocation (50/30/20 Rule):**\n"
+                f"Based on your current net worth: **${net_worth:,.2f}**\n\n"
+                f"🏠 **Needs (50%)**: ${needs:,.2f}\n"
+                f"🎉 **Wants (30%)**: ${wants:,.2f}\n"
+                f"📈 **Savings/Debt (20%)**: ${savings:,.2f}"
+            )
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Calc Expenses Error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
     async def start(self):
         """Starts the bot polling."""
         await self.application.initialize()
@@ -581,7 +638,7 @@ class ProductionBot:
     async def start_newlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Starts the conversation to log a new production run."""
         context.user_data['log_data'] = {
-            'date': datetime.now().strftime("%Y-%m-%d"),
+            'date': datetime.now().strftime("%Y/%m/%d"),
             'ingredients': []
         }
         await update.message.reply_text("Starting a new production log. What is the **Product Name**?")
