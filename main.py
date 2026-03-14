@@ -557,6 +557,77 @@ class ProductionBot:
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
                     {'name': 'Color', 'amount': 120, 'unit': 'ml'}
                 ]
+            },
+            'desinfectante bebe': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 50, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante floral': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 160, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante frescor marino': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante strawberry': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante pino': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante canela': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Canela', 'amount': 100, 'unit': 'ml'},
+                    {'name': 'Amarillo', 'amount': 10, 'unit': 'ml'}
+                ]
+            },
+            'desinfectante antitabaco': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Alcohol isopropilico', 'amount': 4, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 0.8, 'unit': 'kg'},
+                    {'name': 'Fragancia prasenta', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Amarillo', 'amount': 150, 'unit': 'ml'}
+                ]
             }
             # Add more products here
         }
@@ -682,7 +753,7 @@ class ProductionBot:
         context.user_data['log_data'] = {
             'date': datetime.now().strftime("%Y/%m/%d"),
         }
-        await update.message.reply_text("Starting a new production log. What is the **Product Name**? (e.g., Desifectante lavanda)")
+        await update.message.reply_text("Starting a new production log. What is the **Product Name**? (e.g., Desinfectante lavanda)")
         return PRODUCT_NAME
 
     async def start_known_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
