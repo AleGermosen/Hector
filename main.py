@@ -526,18 +526,41 @@ class FinanceBot:
 # BOT 2: PRODUCTION BOT
 # ==================================================================================================
 # Conversation states for ProductionBot
-PRODUCT_NAME, BATCH_CODE, INGREDIENT_NAME, INGREDIENT_AMOUNT_UNIT, MORE_INGREDIENTS, \
-    TOTAL_GALLONS, WEIGHED_BY, RECEIVED_BY = range(8)
+(
+    SELECT_PRODUCT,
+    PRODUCT_NAME,
+    TOTAL_GALLONS_INPUT,
+    CONFIRM_RECIPE,
+    BATCH_CODE,
+    WEIGHED_BY,
+    RECEIVED_BY
+) = range(7)
 
 class ProductionBot:
     """
-    Bot 2: Handles logging for production line activities.
+    Bot 2: Handles logging for production line activities and inventory tracking.
     """
     def __init__(self, token, google_client, production_sheet_id):
         self.token = token
         self.client = google_client
         self.production_sheet_id = production_sheet_id
         
+        # Define base recipes for products (per 55 gallons)
+        # You can expand this dictionary as needed.
+        self.recipes = {
+            'Desifectante Lavanda': {
+                'base_gallons': 55.0,
+                'ingredients': [
+                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                ]
+            }
+            # Add more products here
+        }
+
         self.application = ApplicationBuilder().token(self.token).build()
         self._register_handlers()
 
@@ -545,24 +568,43 @@ class ProductionBot:
         """Registers all command and message handlers for this bot."""
         # Conversation Handler for new production log
         conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('newlog', self.start_newlog)],
+            entry_points=[
+                CommandHandler('newlog', self.start_newlog),
+                CommandHandler('knownproduct', self.start_known_product)
+            ],
             states={
+                SELECT_PRODUCT: [CallbackQueryHandler(self.select_product_callback)],
                 PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_product_name)],
+                TOTAL_GALLONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
+                CONFIRM_RECIPE: [CallbackQueryHandler(self.confirm_recipe_callback)],
                 BATCH_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_batch_code)],
-                INGREDIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_name)],
-                INGREDIENT_AMOUNT_UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_amount_unit)],
-                MORE_INGREDIENTS: [CallbackQueryHandler(self.more_ingredients_callback)],
-                TOTAL_GALLONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_total_gallons)],
                 WEIGHED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_weighed_by)],
                 RECEIVED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_received_by)],
             },
             fallbacks=[CommandHandler('cancel', self.cancel)],
-            allow_reentry=True # Allows users to restart conversation if they get stuck
+            allow_reentry=True 
         )
 
         self.application.add_handler(CommandHandler('start', self.start_cmd))
+        self.application.add_handler(CommandHandler('help', self.help_cmd))
         self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
+        self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
+        self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd))
         self.application.add_handler(conv_handler)
+
+    async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Displays help for the Production Bot."""
+        help_text = (
+            "🚀 **Production Bot Help:**\n\n"
+            "/newlog - Start a new production batch log by typing the name.\n"
+            "/knownproduct - Start a log by selecting from a list of products.\n"
+            "/inventory - View current ingredient stock levels.\n"
+            "/addinv [Item] [Amount] [Unit] - Add stock to inventory.\n"
+            "/check_sheet - Check connection to Google Sheets.\n"
+            "/cancel - Cancel the current logging process.\n"
+            "/help - Show this help message."
+        )
+        await update.message.reply_text(help_text, parse_mode='Markdown')
 
     async def check_sheet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Checks connectivity to the Google Sheet with detailed diagnostics."""
@@ -631,88 +673,130 @@ class ProductionBot:
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for the /start command."""
         await update.message.reply_text(
-            "Welcome to the Production Bot! I can help you log production runs.\n\n"
-            "Use the /newlog command to start logging a new production batch."
+            "Welcome to the Production Bot! I can help you log production runs and track inventory.\n\n"
+            "Use /newlog or /knownproduct to start a run, or /inventory to see stock levels."
         )
 
     async def start_newlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Starts the conversation to log a new production run."""
+        """Starts the conversation to log a new production run by typing name."""
         context.user_data['log_data'] = {
             'date': datetime.now().strftime("%Y/%m/%d"),
-            'ingredients': []
         }
-        await update.message.reply_text("Starting a new production log. What is the **Product Name**?")
+        await update.message.reply_text("Starting a new production log. What is the **Product Name**? (e.g., Desifectante lavanda)")
         return PRODUCT_NAME
 
+    async def start_known_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Starts the known product selection flow."""
+        context.user_data['log_data'] = {
+            'date': datetime.now().strftime("%Y/%m/%d"),
+        }
+        
+        recipes = self.recipes.keys()
+        if not recipes:
+            await update.message.reply_text("No known product recipes found.")
+            return ConversationHandler.END
+
+        keyboard = [[InlineKeyboardButton(name.title(), callback_data=name)] for name in recipes]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text("Please select a product:", reply_markup=reply_markup)
+        return SELECT_PRODUCT
+
+    async def select_product_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles product selection from the inline keyboard."""
+        query = update.callback_query
+        await query.answer()
+        
+        product_name = query.data
+        context.user_data['log_data']['product_name'] = product_name
+        
+        await query.edit_message_text(f"Selected **{product_name.title()}**. How many **gallons** are you producing?", parse_mode='Markdown')
+        return TOTAL_GALLONS_INPUT
+
     async def get_product_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores product name and asks for batch code."""
-        context.user_data['log_data']['product_name'] = update.message.text.strip()
-        await update.message.reply_text("Got it. What is the **Batch Code**?")
-        return BATCH_CODE
-
-    async def get_batch_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores batch code and asks for the first ingredient."""
-        context.user_data['log_data']['batch_code'] = update.message.text.strip()
-        await update.message.reply_text("Batch code recorded. Now, what is the **first ingredient**? (e.g., Water)")
-        return INGREDIENT_NAME
-
-    async def get_ingredient_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores ingredient name and asks for its amount and unit."""
-        current_ingredient_name = update.message.text.strip()
-        context.user_data['current_ingredient'] = {'name': current_ingredient_name}
-        await update.message.reply_text(
-            f"How much **{current_ingredient_name}** was used? (e.g., 500 kg or 100 lbs)"
-        )
-        return INGREDIENT_AMOUNT_UNIT
-
-    async def get_ingredient_amount_unit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores ingredient amount and unit, then asks if there are more ingredients."""
-        text = update.message.text.strip()
-        match = re.match(r'(\d+(\.\d+)?)\s*(kg|lbs|gallons|liters|g|ml)', text, re.IGNORECASE)
-        if match:
-            amount = float(match.group(1))
-            unit = match.group(3).lower()
-            context.user_data['current_ingredient']['amount'] = amount
-            context.user_data['current_ingredient']['unit'] = unit
-            context.user_data['log_data']['ingredients'].append(context.user_data['current_ingredient'])
-            context.user_data.pop('current_ingredient') # Clear current ingredient
-
-            keyboard = [[InlineKeyboardButton("Yes, add another", callback_data='add_more_ingredients')],
-                        [InlineKeyboardButton("No, I'm done with ingredients", callback_data='no_more_ingredients')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Ingredient added. Add more ingredients?", reply_markup=reply_markup)
-            return MORE_INGREDIENTS
+        """Stores product name and asks for total gallons."""
+        product_name = update.message.text.strip()
+        context.user_data['log_data']['product_name'] = product_name
+        
+        # Check if we have a recipe for this product
+        recipe = self.recipes.get(product_name.lower())
+        
+        if recipe:
+            await update.message.reply_text(f"Found recipe for **{product_name}**. How many **gallons** are you producing?")
+            return TOTAL_GALLONS_INPUT
         else:
             await update.message.reply_text(
-                "Invalid format. Please provide amount and unit (e.g., 500 kg or 100 lbs)."
+                f"❌ I don't have a recipe for **{product_name}**. \n"
+                f"Available recipes: {', '.join(self.recipes.keys())}.\n"
+                f"Please type the product name again exactly or use /knownproduct."
             )
-            return INGREDIENT_AMOUNT_UNIT # Stay in the same state
+            return PRODUCT_NAME
 
-    async def more_ingredients_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles callback for adding more ingredients or moving to next step."""
-        query = update.callback_query
-        await query.answer() # Acknowledge the callback query
-
-        if query.data == 'add_more_ingredients':
-            await query.edit_message_text("Okay, what is the **next ingredient**? (e.g., Surfactant X)")
-            return INGREDIENT_NAME
-        elif query.data == 'no_more_ingredients':
-            await query.edit_message_text("No more ingredients. What is the **Total Gallons Produced** for this batch?")
-            return TOTAL_GALLONS
-
-    async def get_total_gallons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores total gallons and asks for who weighed the production."""
+    async def calculate_recipe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Calculates ingredient amounts based on total gallons."""
         try:
             total_gallons = float(update.message.text.strip())
-            context.user_data['log_data']['total_gallons'] = total_gallons
-            await update.message.reply_text("Total gallons recorded. Who **weighed** the production?")
-            return WEIGHED_BY
         except ValueError:
-            await update.message.reply_text("Please enter a valid number for total gallons.")
-            return TOTAL_GALLONS
+            await update.message.reply_text("Please enter a valid number for gallons.")
+            return TOTAL_GALLONS_INPUT
+
+        product_name = context.user_data['log_data']['product_name']
+        recipe = self.recipes.get(product_name.lower())
+        
+        if not recipe:
+            await update.message.reply_text("Error: Recipe lost. Please restart /newlog.")
+            return ConversationHandler.END
+
+        base_gallons = recipe['base_gallons']
+        ratio = total_gallons / base_gallons
+        
+        calculated_ingredients = []
+        msg = f"🧪 **Recipe Calculation for {total_gallons} gallons of {product_name}:**\n\n"
+        
+        for ing in recipe['ingredients']:
+            new_amount = ing['amount'] * ratio
+            calculated_ingredients.append({
+                'name': ing['name'],
+                'amount': round(new_amount, 3),
+                'unit': ing['unit']
+            })
+            msg += f"- **{ing['name']}**: {new_amount:.3f} {ing['unit']}\n"
+            
+        context.user_data['log_data']['total_gallons'] = total_gallons
+        context.user_data['log_data']['ingredients'] = calculated_ingredients
+        
+        msg += "\nIs this correct?"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Yes, proceed", callback_data='confirm_yes')],
+            [InlineKeyboardButton("❌ No, cancel", callback_data='confirm_no')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+        return CONFIRM_RECIPE
+
+    async def confirm_recipe_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles confirmation of the calculated recipe."""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == 'confirm_yes':
+            await query.edit_message_text("✅ Recipe confirmed. What is the **Batch Code**?")
+            return BATCH_CODE
+        else:
+            await query.edit_message_text("❌ Production log cancelled.")
+            context.user_data.pop('log_data', None)
+            return ConversationHandler.END
+
+    async def get_batch_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stores batch code and asks for who weighed."""
+        context.user_data['log_data']['batch_code'] = update.message.text.strip()
+        await update.message.reply_text("Batch code recorded. Who **weighed** the production?")
+        return WEIGHED_BY
 
     async def get_weighed_by(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stores who weighed the production and asks for who received it."""
+        """Stores who weighed and asks for who received."""
         context.user_data['log_data']['weighed_by'] = update.message.text.strip()
         await update.message.reply_text("Weighed by recorded. Who **received** the production?")
         return RECEIVED_BY
@@ -761,6 +845,11 @@ class ProductionBot:
                     ])
             
             await loop.run_in_executor(None, lambda: self._insert_production_rows(sheet, rows_to_insert))
+            
+            # Update Inventory
+            if log_data['ingredients']:
+                await loop.run_in_executor(None, lambda: self._update_inventory(spreadsheet, log_data['ingredients']))
+
             await update.message.reply_text(f"✅ Production log successfully saved to sheet: '{worksheet_title}'!")
         except Exception as e:
             logger.error(f"Error saving production log to sheet: {e}")
@@ -782,6 +871,153 @@ class ProductionBot:
 
         sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
 
+    def _update_inventory(self, spreadsheet, ingredients):
+        """Updates the 'Inventory' sheet by subtracting the used ingredients."""
+        try:
+            try:
+                inventory_sheet = spreadsheet.worksheet("Inventory")
+            except gspread.WorksheetNotFound:
+                inventory_sheet = spreadsheet.add_worksheet(title="Inventory", rows="100", cols="3")
+                inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
+            
+            data = inventory_sheet.get_all_values()
+            if not data:
+                headers = ["Ingredient", "Quantity", "Unit"]
+                inventory_sheet.insert_row(headers, index=1)
+                data = [headers]
+            
+            headers = data[0]
+            try:
+                ing_col = headers.index("Ingredient") + 1
+                qty_col = headers.index("Quantity") + 1
+            except ValueError:
+                ing_col, qty_col = 1, 2
+
+            for ing in ingredients:
+                name = ing['name'].strip().lower()
+                amount = ing['amount']
+                
+                row_idx = -1
+                for i, row in enumerate(data[1:], start=2):
+                    if len(row) >= ing_col and row[ing_col-1].strip().lower() == name:
+                        row_idx = i
+                        break
+                
+                if row_idx != -1:
+                    current_val = data[row_idx-1][qty_col-1]
+                    try:
+                        current_qty = float(current_val.replace(',', '')) if current_val else 0.0
+                    except ValueError:
+                        current_qty = 0.0
+                    new_qty = current_qty - amount
+                    inventory_sheet.update_cell(row_idx, qty_col, new_qty)
+                    # Update local data so consecutive identical ingredients in same batch work
+                    data[row_idx-1][qty_col-1] = str(new_qty)
+                else:
+                    inventory_sheet.append_row([ing['name'], -amount, ing['unit']])
+                    # Add to local data
+                    data.append([ing['name'], str(-amount), ing['unit']])
+        except Exception as e:
+            logger.error(f"Error updating inventory: {e}")
+
+    async def inventory_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Displays the current inventory levels."""
+        if not self.client or not self.production_sheet_id:
+            await update.message.reply_text("❌ Error: Production sheet details are not configured.")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
+            try:
+                inventory_sheet = await loop.run_in_executor(None, lambda: spreadsheet.worksheet("Inventory"))
+            except gspread.WorksheetNotFound:
+                await update.message.reply_text("📦 Inventory sheet not found. It will be created when you log a production run.")
+                return
+
+            records = await loop.run_in_executor(None, inventory_sheet.get_all_records)
+            
+            if not records:
+                await update.message.reply_text("📦 Inventory is currently empty.")
+                return
+
+            response = "📦 **Current Inventory:**\n\n"
+            for row in records:
+                name = row.get('Ingredient') or row.get('ingredient') or "Unknown"
+                qty = row.get('Quantity') or row.get('quantity') or 0
+                unit = row.get('Unit') or row.get('unit') or ""
+                response += f"- **{name}**: {qty} {unit}\n"
+            
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error fetching inventory: {e}")
+            await update.message.reply_text(f"❌ Error fetching inventory: {str(e)}")
+
+    async def add_inventory_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Adds stock to the inventory. Usage: /addinv [Ingredient] [Amount] [Unit]"""
+        if not self.client or not self.production_sheet_id:
+            await update.message.reply_text("❌ Error: Production sheet details are not configured.")
+            return
+
+        try:
+            if len(context.args) < 3:
+                await update.message.reply_text("❌ Usage: `/addinv [Ingredient] [Amount] [Unit]`\nExample: `/addinv Water 1000 liters`", parse_mode='Markdown')
+                return
+            
+            name = context.args[0].capitalize()
+            try:
+                amount = float(context.args[1])
+            except ValueError:
+                await update.message.reply_text("❌ Invalid amount. Please provide a number.")
+                return
+            unit = context.args[2].lower()
+
+            loop = asyncio.get_running_loop()
+            spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
+            
+            await loop.run_in_executor(None, lambda: self._add_to_inventory(spreadsheet, name, amount, unit))
+            await update.message.reply_text(f"✅ Added {amount} {unit} of **{name}** to inventory.", parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error adding to inventory: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    def _add_to_inventory(self, spreadsheet, name, amount, unit):
+        """Helper to add stock to inventory (blocking)."""
+        try:
+            try:
+                inventory_sheet = spreadsheet.worksheet("Inventory")
+            except gspread.WorksheetNotFound:
+                inventory_sheet = spreadsheet.add_worksheet(title="Inventory", rows="100", cols="3")
+                inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
+            
+            data = inventory_sheet.get_all_values()
+            if not data:
+                inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
+                data = [["Ingredient", "Quantity", "Unit"]]
+            
+            headers = data[0]
+            ing_col = headers.index("Ingredient") + 1 if "Ingredient" in headers else 1
+            qty_col = headers.index("Quantity") + 1 if "Quantity" in headers else 2
+
+            row_idx = -1
+            for i, row in enumerate(data[1:], start=2):
+                if len(row) >= ing_col and row[ing_col-1].strip().lower() == name.lower():
+                    row_idx = i
+                    break
+            
+            if row_idx != -1:
+                current_val = data[row_idx-1][qty_col-1]
+                try:
+                    current_qty = float(current_val.replace(',', '')) if current_val else 0.0
+                except ValueError:
+                    current_qty = 0.0
+                new_qty = current_qty + amount
+                inventory_sheet.update_cell(row_idx, qty_col, new_qty)
+            else:
+                inventory_sheet.append_row([name, amount, unit])
+        except Exception as e:
+            logger.error(f"Error in _add_to_inventory: {e}")
+            raise e
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancels the current conversation."""
