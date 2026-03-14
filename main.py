@@ -548,7 +548,7 @@ class ProductionBot:
         # Define base recipes for products (per 55 gallons)
         # You can expand this dictionary as needed.
         self.recipes = {
-            'Desifectante Lavanda': {
+            'desinfectante lavanda': {
                 'base_gallons': 55.0,
                 'ingredients': [
                     {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
