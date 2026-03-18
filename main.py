@@ -454,7 +454,7 @@ class FinanceBot:
             await update.message.reply_text(f"❌ Error calculating net worth: {str(e)}")
 
     async def calc_expenses_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Calculates 50% for Needs and 30% for Wants based on net worth."""
+        """Calculates 50% for Needs and 30% for Wants based on total income and tracks spending."""
         user_id = update.message.from_user.id
         sheet = self.get_user_sheet(user_id)
 
@@ -467,7 +467,9 @@ class FinanceBot:
             records = await loop.run_in_executor(None, sheet.get_all_values)
 
             total_income = 0.0
-            total_expenses = 0.0
+            actual_needs = 0.0
+            actual_wants = 0.0
+            actual_savings = 0.0
             
             start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
 
@@ -480,26 +482,40 @@ class FinanceBot:
                     if trans_type == 'Income':
                         total_income += amount
                     elif trans_type == 'Expense':
-                        total_expenses += amount
+                        # Check if category exists
+                        category = row[4].strip().capitalize() if len(row) > 4 else "Other"
+                        
+                        if category == 'Needs':
+                            actual_needs += amount
+                        elif category == 'Wants':
+                            actual_wants += amount
+                        elif category in ['Savings', 'Debt']:
+                            actual_savings += amount
                 except ValueError:
                     continue
 
-            net_worth = total_income - total_expenses
-            
-            if net_worth <= 0:
-                await update.message.reply_text(f"Your net worth is ${net_worth:,.2f}. You might want to increase it before budgeting!")
+            if total_income <= 0:
+                await update.message.reply_text("No income recorded yet. Cannot calculate budget.")
                 return
 
-            needs = net_worth * 0.5
-            wants = net_worth * 0.3
-            savings = net_worth * 0.2
+            budget_needs = total_income * 0.5
+            budget_wants = total_income * 0.3
+            budget_savings = total_income * 0.2
+
+            def get_status(actual, budget):
+                if actual > budget:
+                    return f"⚠️ **OVER** by ${actual - budget:,.2f}"
+                else:
+                    return f"✅ Left: ${budget - actual:,.2f}"
 
             response = (
-                f"💰 **Budget Allocation (50/30/20 Rule):**\n"
-                f"Based on your current net worth: **${net_worth:,.2f}**\n\n"
-                f"🏠 **Needs (50%)**: ${needs:,.2f}\n"
-                f"🎉 **Wants (30%)**: ${wants:,.2f}\n"
-                f"📈 **Savings/Debt (20%)**: ${savings:,.2f}"
+                f"💰 **Budget Status (vs Income ${total_income:,.2f}):**\n\n"
+                f"🏠 **Needs (50%)**: ${budget_needs:,.2f}\n"
+                f"   Spent: ${actual_needs:,.2f} -> {get_status(actual_needs, budget_needs)}\n\n"
+                f"🎉 **Wants (30%)**: ${budget_wants:,.2f}\n"
+                f"   Spent: ${actual_wants:,.2f} -> {get_status(actual_wants, budget_wants)}\n\n"
+                f"📈 **Savings/Debt (20%)**: ${budget_savings:,.2f}\n"
+                f"   Spent: ${actual_savings:,.2f} -> {get_status(actual_savings, budget_savings)}"
             )
 
             await update.message.reply_text(response, parse_mode='Markdown')
