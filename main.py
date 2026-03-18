@@ -394,6 +394,19 @@ class FinanceBot:
             await update.message.reply_text("❌ Unauthorized.")
             return
 
+        target_month = None
+        target_year = datetime.now().year
+        title_suffix = "(All Time)"
+
+        if context.args:
+            arg = context.args[0]
+            target_month = self._parse_month(arg)
+            if not target_month:
+                await update.message.reply_text(f"❌ Invalid month: {arg}")
+                return
+            month_name = datetime(target_year, target_month, 1).strftime("%B")
+            title_suffix = f"({month_name} {target_year})"
+
         try:
             loop = asyncio.get_running_loop()
             records = await loop.run_in_executor(None, sheet.get_all_values)
@@ -406,6 +419,12 @@ class FinanceBot:
             for row in records[start_index:]:
                 if len(row) < 4: continue
                 try:
+                    # Date filtering
+                    if target_month:
+                        row_date = self._parse_date_robust(row[0])
+                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
+                            continue
+
                     trans_type = row[1].strip().capitalize()
                     amount = self._parse_amount_robust(row[3])
                     
@@ -416,38 +435,65 @@ class FinanceBot:
                 except ValueError:
                     continue
 
-            if total_income == 0:
-                await update.message.reply_text("No income recorded yet. Cannot calculate net worth.")
+            if total_income == 0 and total_expenses == 0:
+                await update.message.reply_text(f"No records found {title_suffix.lower()}.")
                 return
 
             net_worth = total_income - total_expenses
-            expense_percentage = (total_expenses / total_income) * 100 if total_income > 0 else 0
-            net_percentage = 100 - expense_percentage
+            
+            # Avoid division by zero
+            if total_income > 0:
+                expense_percentage = (total_expenses / total_income) * 100
+                net_percentage = 100 - expense_percentage
+            else:
+                expense_percentage = 0.0
+                net_percentage = 0.0
 
             # Create Pie Chart
             labels = ['Expenses', 'Net Worth']
-            sizes = [total_expenses, net_worth]
-            colors = ['#ff9999','#66b3ff']
+            # If net worth is negative, the pie chart doesn't make sense as 'part of whole' in the same way,
+            # but we can still show Expenses vs Income or just skip the chart if weird.
+            # Standard approach: Show Expenses and (Income - Expenses) if positive.
             
-            fig, ax = plt.subplots()
-            ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-            ax.axis('equal')
-            plt.title('Net Worth Breakdown (Income vs Expenses)')
+            chart_generated = False
+            buf = None
 
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png')
-            buf.seek(0)
-            plt.close(fig)
+            if total_income > 0 and net_worth >= 0:
+                sizes = [total_expenses, net_worth]
+                colors = ['#ff9999','#66b3ff']
+                
+                fig, ax = plt.subplots()
+                ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+                ax.axis('equal')
+                plt.title(f'Net Worth Breakdown {title_suffix}')
+
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png')
+                buf.seek(0)
+                plt.close(fig)
+                chart_generated = True
 
             # Generate text breakdown
             breakdown_text = (
-                f"💰 **Net Worth Summary:**\n\n"
+                f"💰 **Net Worth Summary {title_suffix}:**\n\n"
                 f"- **Total Income**: ${total_income:,.2f}\n"
-                f"- **Total Expenses**: ${total_expenses:,.2f} ({expense_percentage:.1f}% of income)\n\n"
-                f"**Net Worth**: **${net_worth:,.2f}** ({net_percentage:.1f}% of income remaining)"
+                f"- **Total Expenses**: ${total_expenses:,.2f}"
             )
+            
+            if total_income > 0:
+                breakdown_text += f" ({expense_percentage:.1f}% of income)\n\n"
+            else:
+                 breakdown_text += "\n\n"
 
-            await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+            breakdown_text += f"**Net Worth**: **${net_worth:,.2f}**"
+            
+            if total_income > 0:
+                 breakdown_text += f" ({net_percentage:.1f}% of income remaining)"
+
+            if chart_generated:
+                await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(breakdown_text, parse_mode='Markdown')
 
         except Exception as e:
             logger.error(f"Net Worth Error: {e}")
