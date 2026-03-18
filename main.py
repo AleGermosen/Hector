@@ -462,6 +462,19 @@ class FinanceBot:
             await update.message.reply_text("❌ Unauthorized.")
             return
 
+        target_month = None
+        target_year = datetime.now().year
+        title_suffix = "(All Time)"
+
+        if context.args:
+            arg = context.args[0]
+            target_month = self._parse_month(arg)
+            if not target_month:
+                await update.message.reply_text(f"❌ Invalid month: {arg}")
+                return
+            month_name = datetime(target_year, target_month, 1).strftime("%B")
+            title_suffix = f"({month_name} {target_year})"
+
         try:
             loop = asyncio.get_running_loop()
             records = await loop.run_in_executor(None, sheet.get_all_values)
@@ -476,6 +489,12 @@ class FinanceBot:
             for row in records[start_index:]:
                 if len(row) < 4: continue
                 try:
+                    # Date filtering
+                    if target_month:
+                        row_date = self._parse_date_robust(row[0])
+                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
+                            continue
+
                     trans_type = row[1].strip().capitalize()
                     amount = self._parse_amount_robust(row[3])
                     
@@ -495,7 +514,7 @@ class FinanceBot:
                     continue
 
             if total_income <= 0:
-                await update.message.reply_text("No income recorded yet. Cannot calculate budget.")
+                await update.message.reply_text(f"No income recorded {title_suffix.lower()}. Cannot calculate budget.")
                 return
 
             budget_needs = total_income * 0.5
@@ -509,7 +528,8 @@ class FinanceBot:
                     return f"✅ Left: ${budget - actual:,.2f}"
 
             response = (
-                f"💰 **Budget Status (vs Income ${total_income:,.2f}):**\n\n"
+                f"💰 **Budget Status {title_suffix}**\n"
+                f"(vs Income ${total_income:,.2f}):\n\n"
                 f"🏠 **Needs (50%)**: ${budget_needs:,.2f}\n"
                 f"   Spent: ${actual_needs:,.2f} -> {get_status(actual_needs, budget_needs)}\n\n"
                 f"🎉 **Wants (30%)**: ${budget_wants:,.2f}\n"
