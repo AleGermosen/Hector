@@ -637,7 +637,7 @@ class ProductionBot:
             'desinfectante lavanda': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -647,7 +647,7 @@ class ProductionBot:
             'desinfectante bebe': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -657,7 +657,7 @@ class ProductionBot:
             'desinfectante floral': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -667,7 +667,7 @@ class ProductionBot:
             'desinfectante frescor marino': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -677,7 +677,7 @@ class ProductionBot:
             'desinfectante strawberry': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -687,7 +687,7 @@ class ProductionBot:
             'desinfectante pino': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -697,7 +697,7 @@ class ProductionBot:
             'desinfectante canela': {
                 'base_gallons': 55.0,
                 'ingredients': [
-                    {'name': 'Fragrancia', 'amount': 1.3, 'unit': 'kg'},
+                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
                     {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
                     {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
                     {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
@@ -726,8 +726,8 @@ class ProductionBot:
         # Conversation Handler for new production log
         conv_handler = ConversationHandler(
             entry_points=[
-                CommandHandler('newlog', self.start_newlog),
-                CommandHandler('knownproduct', self.start_known_product)
+                CommandHandler('nl', self.start_newlog),
+                CommandHandler('kp', self.start_known_product)
             ],
             states={
                 SELECT_PRODUCT: [CallbackQueryHandler(self.select_product_callback)],
@@ -751,7 +751,15 @@ class ProductionBot:
         self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
         self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
         self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd))
+        
         self.application.add_handler(conv_handler)
+        # Add a global /cancel command that works everywhere for this bot
+        self.application.add_handler(CommandHandler('cancel', self.cancel_global))
+
+    async def cancel_global(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Global cancel command handler."""
+        # This will be handled if not inside a conversation (or if fallbacks fail)
+        await update.message.reply_text("No active command to cancel.")
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Displays help for the Production Bot."""
