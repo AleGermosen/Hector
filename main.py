@@ -173,6 +173,9 @@ class FinanceBot:
             "To log a transaction, send a message in the format:\n"
             "`[Type] [Account] [Amount] [Category] [Description]`\n"
             "Example: `Expense Cash 15.50 Needs Lunch with colleagues`\n\n"
+            "**Transfers:**\n"
+            "`Transfer [From] to [To] [Amount]`\n"
+            "Example: `Transfer Digital to Cash 1500`\n\n"
             "**Commands:**\n"
             "/start - Welcome message and check authorization.\n"
             "/help - Shows this help message.\n"
@@ -186,7 +189,7 @@ class FinanceBot:
         await update.message.reply_text(help_text, parse_mode='Markdown')
 
     async def handle_finance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Parses text messages to log income/expenses."""
+        """Parses text messages to log income/expenses or transfers."""
         user_id = update.message.from_user.id
         sheet = self.get_user_sheet(user_id)
 
@@ -196,6 +199,31 @@ class FinanceBot:
 
         text = update.message.text
         try:
+            # Check for Transfer command
+            # Regex: Transfer <From> to <To> <Amount> <Description?>
+            transfer_match = re.match(r'^Transfer\s+(.+?)\s+to\s+(.+?)\s+([\d,]+(?:\.\d+)?)(?:\s+(.*))?$', text, re.IGNORECASE)
+            
+            if transfer_match:
+                from_acc = transfer_match.group(1).strip().capitalize()
+                to_acc = transfer_match.group(2).strip().capitalize()
+                amount_str = transfer_match.group(3)
+                desc = transfer_match.group(4) or ""
+                
+                amount = self._parse_amount_robust(amount_str)
+                date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Create two rows: Expense from Source, Income to Dest
+                # Using "Transfer" as Category
+                row_out = [date, "Expense", from_acc, amount, "Transfer", f"Transfer to {to_acc} {desc}"]
+                row_in = [date, "Income", to_acc, amount, "Transfer", f"Transfer from {from_acc} {desc}"]
+                
+                loop = asyncio.get_running_loop()
+                # Insert consecutively
+                await loop.run_in_executor(None, lambda: self._insert_rows(sheet, [row_out, row_in]))
+                
+                await update.message.reply_text(f"✅ Transfer Logged: {from_acc} ➡️ {to_acc} ${amount}")
+                return
+
             # Expected format: [Type] [Account] [Amount] [Category] [Description]
             parts = text.split(maxsplit=4)
             if len(parts) < 4: raise ValueError("Missing arguments")
@@ -239,6 +267,13 @@ class FinanceBot:
         existing_data = sheet.col_values(1)
         next_row_index = len(existing_data) + 1
         sheet.insert_row(row_data, index=next_row_index, value_input_option='USER_ENTERED')
+
+    def _insert_rows(self, sheet, rows_data):
+        """Helper to insert multiple rows (blocking)."""
+        existing_data = sheet.col_values(1)
+        next_row_index = len(existing_data) + 1
+        # insert_rows is more efficient than calling insert_row multiple times
+        sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Calculates balance based on sheet data."""
@@ -427,7 +462,12 @@ class FinanceBot:
 
                     trans_type = row[1].strip().capitalize()
                     amount = self._parse_amount_robust(row[3])
+                    category = row[4].strip().capitalize() if len(row) > 4 else ""
                     
+                    # Ignore transfers in Net Worth Calculation (since they are both Income and Expense)
+                    if category == 'Transfer':
+                        continue
+
                     if trans_type == 'Income':
                         total_income += amount
                     elif trans_type == 'Expense':
@@ -543,13 +583,18 @@ class FinanceBot:
 
                     trans_type = row[1].strip().capitalize()
                     amount = self._parse_amount_robust(row[3])
+                    category = row[4].strip().capitalize() if len(row) > 4 else "Other"
                     
+                    # Ignore transfers in Budget Calculation
+                    if category == 'Transfer':
+                        continue
+
                     if trans_type == 'Income':
                         total_income += amount
                     elif trans_type == 'Expense':
                         # Check if category exists
                         category = row[4].strip().capitalize() if len(row) > 4 else "Other"
-                        
+
                         if category == 'Needs':
                             actual_needs += amount
                         elif category == 'Wants':
