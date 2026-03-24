@@ -272,7 +272,6 @@ class FinanceBot:
         """Helper to insert multiple rows (blocking)."""
         existing_data = sheet.col_values(1)
         next_row_index = len(existing_data) + 1
-        # insert_rows is more efficient than calling insert_row multiple times
         sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -592,9 +591,6 @@ class FinanceBot:
                     if trans_type == 'Income':
                         total_income += amount
                     elif trans_type == 'Expense':
-                        # Check if category exists
-                        category = row[4].strip().capitalize() if len(row) > 4 else "Other"
-
                         if category == 'Needs':
                             actual_needs += amount
                         elif category == 'Wants':
@@ -654,6 +650,7 @@ class FinanceBot:
 # ==================================================================================================
 # Conversation states for ProductionBot
 (
+    SELECT_CATEGORY,
     SELECT_PRODUCT,
     PRODUCT_NAME,
     TOTAL_GALLONS_INPUT,
@@ -665,7 +662,7 @@ class FinanceBot:
     TOTAL_GALLONS,
     WEIGHED_BY,
     RECEIVED_BY
-) = range(11)
+) = range(12)
 
 class ProductionBot:
     """
@@ -676,92 +673,118 @@ class ProductionBot:
         self.client = google_client
         self.production_sheet_id = production_sheet_id
         
-        # Define base recipes for products (per 55 gallons)
-        # You can expand this dictionary as needed.
-        self.recipes = {
-            'desinfectante lavanda': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                ]
+        # Categorized recipes
+        self.product_categories = {
+            'Desinfectantes': {
+                'desinfectante lavanda': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante bebe': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 50, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante floral': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 160, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante frescor marino': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante strawberry': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante pino': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante canela': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
+                        {'name': 'Canela', 'amount': 100, 'unit': 'ml'},
+                        {'name': 'Amarillo', 'amount': 10, 'unit': 'ml'}
+                    ]
+                },
+                'desinfectante antitabaco': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Alcohol isopropilico', 'amount': 4, 'unit': 'kg'},
+                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Nonyl phenol', 'amount': 0.8, 'unit': 'kg'},
+                        {'name': 'Fragancia prasenta', 'amount': 1.5, 'unit': 'kg'},
+                        {'name': 'Amarillo', 'amount': 150, 'unit': 'ml'}
+                    ]
+                }
             },
-            'desinfectante bebe': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 50, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante floral': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 160, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante frescor marino': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante strawberry': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante pino': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante canela': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                    {'name': 'Canela', 'amount': 100, 'unit': 'ml'},
-                    {'name': 'Amarillo', 'amount': 10, 'unit': 'ml'}
-                ]
-            },
-            'desinfectante antitabaco': {
-                'base_gallons': 55.0,
-                'ingredients': [
-                    {'name': 'Alcohol isopropilico', 'amount': 4, 'unit': 'kg'},
-                    {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                    {'name': 'Nonyl phenol', 'amount': 0.8, 'unit': 'kg'},
-                    {'name': 'Fragancia prasenta', 'amount': 1.5, 'unit': 'kg'},
-                    {'name': 'Amarillo', 'amount': 150, 'unit': 'ml'}
-                ]
+            'Jabones': {
+                'jabón de cuaba': {
+                    'base_gallons': 132.0,
+                    'ingredients': [
+                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
+                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
+                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
+                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
+                        {'name': 'Opacificante', 'amount': 0.2, 'unit': 'kg'},
+                        {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'},
+                        {'name': 'Rojo', 'amount': 20, 'unit': 'ml'},
+                        {'name': 'Caramelo', 'amount': 10, 'unit': 'ml'}
+                    ]
+                }
             }
-            # Add more products here
+            # Add new categories here, e.g.:
+            # 'Jabones': {
+            #     'jabon liquido': { ... }
+            # }
         }
+
+        # Flatten recipes for easy lookup by name
+        self.recipes = {}
+        for category, products in self.product_categories.items():
+            self.recipes.update(products)
 
         self.application = ApplicationBuilder().token(self.token).build()
         self._register_handlers()
@@ -771,10 +794,13 @@ class ProductionBot:
         # Conversation Handler for new production log
         conv_handler = ConversationHandler(
             entry_points=[
+                CommandHandler('newlog', self.start_newlog),
+                CommandHandler('knownproduct', self.start_known_product),
                 CommandHandler('nl', self.start_newlog),
                 CommandHandler('kp', self.start_known_product)
             ],
             states={
+                SELECT_CATEGORY: [CallbackQueryHandler(self.select_category_callback)],
                 SELECT_PRODUCT: [CallbackQueryHandler(self.select_product_callback)],
                 PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_product_name)],
                 TOTAL_GALLONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
@@ -901,21 +927,40 @@ class ProductionBot:
         return PRODUCT_NAME
 
     async def start_known_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Starts the known product selection flow."""
+        """Starts the known product selection flow by showing categories."""
         context.user_data['log_data'] = {
             'date': datetime.now().strftime("%Y/%m/%d"),
             'ingredients': []
         }
         
-        recipes = self.recipes.keys()
-        if not recipes:
-            await update.message.reply_text("No known product recipes found.")
+        categories = list(self.product_categories.keys())
+        if not categories:
+            await update.message.reply_text("No known product categories found.")
             return ConversationHandler.END
 
-        keyboard = [[InlineKeyboardButton(name.title(), callback_data=name)] for name in recipes]
+        keyboard = [[InlineKeyboardButton(name, callback_data=name)] for name in categories]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text("Please select a product:", reply_markup=reply_markup)
+        await update.message.reply_text("Please select a category:", reply_markup=reply_markup)
+        return SELECT_CATEGORY
+
+    async def select_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles category selection and shows products in that category."""
+        query = update.callback_query
+        await query.answer()
+        
+        category = query.data
+        context.user_data['selected_category'] = category
+        
+        products = self.product_categories.get(category, {})
+        if not products:
+             await query.edit_message_text(f"No products found in **{category}**.", parse_mode='Markdown')
+             return ConversationHandler.END
+             
+        keyboard = [[InlineKeyboardButton(name.title(), callback_data=name)] for name in products.keys()]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(f"Category: **{category}**\nPlease select a product:", reply_markup=reply_markup, parse_mode='Markdown')
         return SELECT_PRODUCT
 
     async def select_product_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1259,44 +1304,6 @@ class ProductionBot:
         except Exception as e:
             logger.error(f"Error adding to inventory: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
-
-    def _add_to_inventory(self, spreadsheet, name, amount, unit):
-        """Helper to add stock to inventory (blocking)."""
-        try:
-            try:
-                inventory_sheet = spreadsheet.worksheet("Inventory")
-            except gspread.WorksheetNotFound:
-                inventory_sheet = spreadsheet.add_worksheet(title="Inventory", rows="100", cols="3")
-                inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
-            
-            data = inventory_sheet.get_all_values()
-            if not data:
-                inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
-                data = [["Ingredient", "Quantity", "Unit"]]
-            
-            headers = data[0]
-            ing_col = headers.index("Ingredient") + 1 if "Ingredient" in headers else 1
-            qty_col = headers.index("Quantity") + 1 if "Quantity" in headers else 2
-
-            row_idx = -1
-            for i, row in enumerate(data[1:], start=2):
-                if len(row) >= ing_col and row[ing_col-1].strip().lower() == name.lower():
-                    row_idx = i
-                    break
-            
-            if row_idx != -1:
-                current_val = data[row_idx-1][qty_col-1]
-                try:
-                    current_qty = float(current_val.replace(',', '')) if current_val else 0.0
-                except ValueError:
-                    current_qty = 0.0
-                new_qty = current_qty + amount
-                inventory_sheet.update_cell(row_idx, qty_col, new_qty)
-            else:
-                inventory_sheet.append_row([name, amount, unit])
-        except Exception as e:
-            logger.error(f"Error in _add_to_inventory: {e}")
-            raise e
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancels the current conversation."""
