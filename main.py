@@ -732,6 +732,19 @@ class ProductionBot:
 
         print(f"Successfully loaded {len(self.recipes)} recipes from Google Sheets.")
 
+    async def reload_recipes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command to refresh recipes from Google Sheets without restarting the bot."""
+        # Optional: Restrict this to your user ID so strangers can't lag your bot
+        # if update.effective_user.id != YOUR_TELEGRAM_ID: return
+
+        await update.message.reply_text("🔄 Refreshing recipes from Google Sheets...")
+
+        try:
+            self._load_recipes_from_sheet()
+            await update.message.reply_text(f"✅ Success! Loaded {len(self.recipes)} recipes.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error reloading: {e}")
+
     def _get_unique_ingredients_with_units(self):
         """Extracts all unique ingredient names and their units from recipes."""
         unique_ingredients = {}
@@ -795,6 +808,8 @@ class ProductionBot:
         self.application.add_handler(add_stock_conv_handler) # Add the new conversation handler
         # Add a global /cancel command that works everywhere for this bot
         self.application.add_handler(CommandHandler('cancel', self.cancel_global))
+
+        self.application.add_handler(CommandHandler("reload", self.reload_recipes))
 
     async def cancel_global(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Global cancel command handler."""
