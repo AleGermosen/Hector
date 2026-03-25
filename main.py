@@ -922,6 +922,33 @@ class ProductionBot:
         self.application = ApplicationBuilder().token(self.token).build()
         self._register_handlers()
 
+    def export_recipes_to_sheet(self):
+        """Run this ONCE to push your hardcoded dictionary to Google Sheets."""
+        # Connect to the sheet (assuming it's the first tab / sheet1)
+        sheet = self.client.open_by_key(self.production_sheet_id).sheet1
+
+        # Create the header row
+        rows = [['Category', 'Product', 'Base Gallons', 'Ingredient', 'Amount', 'Unit']]
+
+        # Flatten the dictionary into rows
+        for category, products in self.product_categories.items():
+            for product_name, details in products.items():
+                base_gallons = details['base_gallons']
+                for ing in details['ingredients']:
+                    rows.append([
+                        category,
+                        product_name,
+                        base_gallons,
+                        ing['name'],
+                        ing['amount'],
+                        ing['unit']
+                    ])
+
+        # Clear existing sheet and write the new data
+        sheet.clear()
+        sheet.update('A1', rows)
+        print("Export complete!")
+
     def _get_unique_ingredients_with_units(self):
         """Extracts all unique ingredient names and their units from recipes."""
         unique_ingredients = {}
@@ -1663,6 +1690,7 @@ async def main():
         
         production_bot = ProductionBot(production_token, production_google_client, production_sheet_id)
         bots.append(production_bot)
+        production_bot.export_recipes_to_sheet()
     else:
        logger.info("SECOND_BOT_TOKEN missing. ProductionBot is disabled.")
 
@@ -1688,33 +1716,6 @@ async def main():
             await bot.stop()
 
 if __name__ == '__main__':
-    def export_recipes_to_sheet(self):
-        """Run this ONCE to push your hardcoded dictionary to Google Sheets."""
-        # Connect to the sheet (assuming it's the first tab / sheet1)
-        sheet = self.client.open_by_key(self.production_sheet_id).sheet1
-
-        # Create the header row
-        rows = [['Category', 'Product', 'Base Gallons', 'Ingredient', 'Amount', 'Unit']]
-
-        # Flatten the dictionary into rows
-        for category, products in self.product_categories.items():
-            for product_name, details in products.items():
-                base_gallons = details['base_gallons']
-                for ing in details['ingredients']:
-                    rows.append([
-                        category,
-                        product_name,
-                        base_gallons,
-                        ing['name'],
-                        ing['amount'],
-                        ing['unit']
-                    ])
-
-        # Clear existing sheet and write the new data
-        sheet.clear()
-        sheet.update('A1', rows)
-        print("Export complete!")
-
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
