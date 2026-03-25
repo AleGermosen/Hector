@@ -778,6 +778,57 @@ class ProductionBot:
                         {'name': 'Rojo', 'amount': 20, 'unit': 'ml'},
                         {'name': 'Caramelo', 'amount': 10, 'unit': 'ml'}
                     ]
+                },
+                'jabón puerto plata': {
+                    'base_gallons': 132.0,
+                    'ingredients': [
+                        {'name': 'Texapon', 'amount': 40, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Sal', 'amount': 31.75, 'unit': 'kg'},
+                        {'name': 'Pasta Sulfonica', 'amount': 2, 'unit': 'kg'},
+                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
+                        {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'},
+                        {'name': 'Rojo', 'amount': 20, 'unit': 'ml'}
+                    ]
+                },
+                'jabón general cigars': {
+                    'base_gallons': 132.0,
+                    'ingredients': [
+                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
+                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
+                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
+                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
+                        {'name': 'Color', 'amount': 500, 'unit': 'ml'}
+                    ]
+                },
+                'jabón omo': {
+                    'base_gallons': 132.0,
+                    'ingredients': [
+                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
+                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
+                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
+                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
+                        {'name': 'Color', 'amount': 500, 'unit': 'ml'}
+                    ]
+                },
+                'jabón de mano': {
+                    'base_gallons': 132.0,
+                    'ingredients': [
+                        {'name': 'Texapon', 'amount': 29, 'unit': 'kg'},
+                        {'name': 'Betaina', 'amount': 2, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 2, 'unit': 'kg'},
+                        {'name': 'Glicerina', 'amount': 500, 'unit': 'ml'},
+                        {'name': 'Propilenglicol', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Almendra', 'amount': 500, 'unit': 'ml'},
+                        {'name': 'Euperlan', 'amount': 1, 'unit': 'kg'},
+                        {'name': 'Sal', 'amount': 16.33, 'unit': 'kg'},
+                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'}
+                    ]
                 }
             },
             'Limpiadores': {
@@ -788,6 +839,41 @@ class ProductionBot:
                         {'name': 'Acido muriático', 'amount': 30, 'unit': 'kg'},
                         {'name': 'Nonyl phenol', 'amount': 2, 'unit': 'kg'},
                         {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'}
+                    ]
+                },
+                'limpia cristal': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Alcohol', 'amount': 12, 'unit': 'kg'},
+                        {'name': 'Butil glicol', 'amount': 12, 'unit': 'kg'},
+                        {'name': 'Amoniaco', 'amount': 0.3, 'unit': 'kg'},
+                        {'name': 'Texapon', 'amount': 0.5, 'unit': 'kg'},
+                        {'name': 'Azul', 'amount': 100, 'unit': 'ml'}
+                    ]
+                },
+                'amor all': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Glicerina', 'amount': 40, 'unit': 'kg'},
+                        {'name': 'Comperland', 'amount': 17, 'unit': 'kg'},
+                        {'name': 'Silicona', 'amount': 4.3, 'unit': 'kg'}
+                    ]
+                }
+            },
+            'Desgrasante': {
+                'frio': {
+                    'base_gallons': 50.0,
+                    'ingredients': [
+                        {'name': 'Soda caustica', 'amount': 9, 'unit': 'kg'},
+                        {'name': 'Texapon', 'amount': 7, 'unit': 'kg'},
+                        {'name': 'Butil', 'amount': 9, 'unit': 'kg'}
+                    ]
+                },
+                'caliente': {
+                    'base_gallons': 55.0,
+                    'ingredients': [
+                        {'name': 'Soda caustica', 'amount': 25, 'unit': 'kg'},
+                        {'name': 'Texapon', 'amount': 12, 'unit': 'kg'}
                     ]
                 }
             },
