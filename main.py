@@ -673,248 +673,18 @@ class ProductionBot:
     """
     Bot 2: Handles logging for production line activities and inventory tracking.
     """
+
     def __init__(self, token, google_client, production_sheet_id):
         self.token = token
         self.client = google_client
         self.production_sheet_id = production_sheet_id
-        
-        # Categorized recipes
-        self.product_categories = {
-            'Desinfectantes': {
-                'desinfectante lavanda': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante bebe': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 50, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante floral': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 160, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante frescor marino': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante strawberry': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante pino': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 120, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante canela': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Fragancia', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 0.05, 'unit': 'kg'},
-                        {'name': 'Canela', 'amount': 100, 'unit': 'ml'},
-                        {'name': 'Amarillo', 'amount': 10, 'unit': 'ml'}
-                    ]
-                },
-                'desinfectante antitabaco': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Alcohol isopropilico', 'amount': 4, 'unit': 'kg'},
-                        {'name': 'Amonio 80%', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 0.8, 'unit': 'kg'},
-                        {'name': 'Fragancia prasenta', 'amount': 1.5, 'unit': 'kg'},
-                        {'name': 'Amarillo', 'amount': 150, 'unit': 'ml'}
-                    ]
-                }
-            },
-            'Jabones': {
-                'jabón de cuaba': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
-                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
-                        {'name': 'Opacificante', 'amount': 0.2, 'unit': 'kg'},
-                        {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'},
-                        {'name': 'Rojo', 'amount': 20, 'unit': 'ml'},
-                        {'name': 'Caramelo', 'amount': 10, 'unit': 'ml'}
-                    ]
-                },
-                'jabón puerto plata': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 40, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 31.75, 'unit': 'kg'},
-                        {'name': 'Pasta Sulfonica', 'amount': 2, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
-                        {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'},
-                        {'name': 'Rojo', 'amount': 20, 'unit': 'ml'}
-                    ]
-                },
-                'jabón general cigars': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
-                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
-                        {'name': 'Color', 'amount': 500, 'unit': 'ml'}
-                    ]
-                },
-                'jabón omo': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
-                        {'name': 'Pasta Sulfonica', 'amount': 17, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
-                        {'name': 'Color', 'amount': 500, 'unit': 'ml'}
-                    ]
-                },
-                'jabón de mano': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 29, 'unit': 'kg'},
-                        {'name': 'Betaina', 'amount': 2, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 2, 'unit': 'kg'},
-                        {'name': 'Glicerina', 'amount': 500, 'unit': 'ml'},
-                        {'name': 'Propilenglicol', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Almendra', 'amount': 500, 'unit': 'ml'},
-                        {'name': 'Euperlan', 'amount': 1, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 16.33, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'}
-                    ]
-                }
-            },
-            'Limpiadores': {
-                'limpia cerámicas': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Acido fosfórico', 'amount': 20, 'unit': 'kg'},
-                        {'name': 'Acido muriático', 'amount': 30, 'unit': 'kg'},
-                        {'name': 'Nonyl phenol', 'amount': 2, 'unit': 'kg'},
-                        {'name': 'Amarillo', 'amount': 100, 'unit': 'ml'}
-                    ]
-                },
-                'limpia cristal': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Alcohol', 'amount': 12, 'unit': 'kg'},
-                        {'name': 'Butil glicol', 'amount': 12, 'unit': 'kg'},
-                        {'name': 'Amoniaco', 'amount': 0.3, 'unit': 'kg'},
-                        {'name': 'Texapon', 'amount': 0.5, 'unit': 'kg'},
-                        {'name': 'Azul', 'amount': 100, 'unit': 'ml'}
-                    ]
-                },
-                'amor all': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Glicerina', 'amount': 40, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 17, 'unit': 'kg'},
-                        {'name': 'Silicona', 'amount': 4.3, 'unit': 'kg'}
-                    ]
-                }
-            },
-            'Desgrasante': {
-                'frio': {
-                    'base_gallons': 50.0,
-                    'ingredients': [
-                        {'name': 'Soda caustica', 'amount': 9, 'unit': 'kg'},
-                        {'name': 'Texapon', 'amount': 7, 'unit': 'kg'},
-                        {'name': 'Butil', 'amount': 9, 'unit': 'kg'}
-                    ]
-                },
-                'caliente': {
-                    'base_gallons': 55.0,
-                    'ingredients': [
-                        {'name': 'Soda caustica', 'amount': 25, 'unit': 'kg'},
-                        {'name': 'Texapon', 'amount': 12, 'unit': 'kg'}
-                    ]
-                }
-            },
-            'Otros': {
-                'suavizante': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Pasta suavizante', 'amount': 20, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 3, 'unit': 'kg'},
-                        {'name': 'Antiespumante', 'amount': 0.4, 'unit': 'kg'},
-                        {'name': 'Color', 'amount': 70, 'unit': 'ml'}
-                    ]
-                },
-                'lavaplatos': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Texapon', 'amount': 28, 'unit': 'kg'},
-                        {'name': 'Comperland', 'amount': 3, 'unit': 'kg'},
-                        {'name': 'Sal', 'amount': 16.78, 'unit': 'kg'},
-                        {'name': 'Pasta Sulfonica', 'amount': 22, 'unit': 'kg'},
-                        {'name': 'Fragancia', 'amount': 0.6, 'unit': 'kg'},
-                        {'name': 'Formol', 'amount': 400, 'unit': 'ml'},
-                        {'name': 'Color', 'amount': 500, 'unit': 'ml'}
-                    ]
-                },
-                'gel de manos': {
-                    'base_gallons': 132.0,
-                    'ingredients': [
-                        {'name': 'Alcohol', 'amount': 215, 'unit': 'kg'},
-                        {'name': 'Carbopol', 'amount': 1.3, 'unit': 'kg'},
-                        {'name': 'Glicerina', 'amount': 0.18, 'unit': 'kg'},
-                        {'name': 'Trietanolamina', 'amount': 0.22, 'unit': 'kg'}
-                    ]
-                }
-            }
-        }
 
-        # Flatten recipes for easy lookup by name
+        # Initialize empty dictionaries
+        self.product_categories = {}
         self.recipes = {}
-        for category, products in self.product_categories.items():
-            self.recipes.update(products)
+
+        # Load data from Google Sheets
+        self._load_recipes_from_sheet()
 
         # Extract all unique ingredients and their common units
         self.known_ingredients = self._get_unique_ingredients_with_units()
@@ -922,32 +692,45 @@ class ProductionBot:
         self.application = ApplicationBuilder().token(self.token).build()
         self._register_handlers()
 
-    def export_recipes_to_sheet(self):
-        """Run this ONCE to push your hardcoded dictionary to Google Sheets."""
-        # Connect to the sheet (assuming it's the first tab / sheet1)
+    def _load_recipes_from_sheet(self):
+        """Fetches the flat table from Google Sheets and reconstructs the nested dictionary."""
         sheet = self.client.open_by_key(self.production_sheet_id).sheet1
 
-        # Create the header row
-        rows = [['Category', 'Product', 'Base Gallons', 'Ingredient', 'Amount', 'Unit']]
+        # get_all_records() automatically uses Row 1 as dictionary keys
+        records = sheet.get_all_records()
 
-        # Flatten the dictionary into rows
+        for row in records:
+            cat = row['Category']
+            prod = row['Product']
+
+            # Ensure numbers are treated as floats
+            bg = float(row['Base Gallons'])
+            amount = float(row['Amount'])
+
+            # Build the category level if it doesn't exist
+            if cat not in self.product_categories:
+                self.product_categories[cat] = {}
+
+            # Build the product level if it doesn't exist
+            if prod not in self.product_categories[cat]:
+                self.product_categories[cat][prod] = {
+                    'base_gallons': bg,
+                    'ingredients': []
+                }
+
+            # Append the ingredient
+            self.product_categories[cat][prod]['ingredients'].append({
+                'name': row['Ingredient'],
+                'amount': amount,
+                'unit': row['Unit']
+            })
+
+        # Flatten recipes for easy lookup by name (rebuilding self.recipes)
+        self.recipes = {}
         for category, products in self.product_categories.items():
-            for product_name, details in products.items():
-                base_gallons = details['base_gallons']
-                for ing in details['ingredients']:
-                    rows.append([
-                        category,
-                        product_name,
-                        base_gallons,
-                        ing['name'],
-                        ing['amount'],
-                        ing['unit']
-                    ])
+            self.recipes.update(products)
 
-        # Clear existing sheet and write the new data
-        sheet.clear()
-        sheet.update('A1', rows)
-        print("Export complete!")
+        print(f"Successfully loaded {len(self.recipes)} recipes from Google Sheets.")
 
     def _get_unique_ingredients_with_units(self):
         """Extracts all unique ingredient names and their units from recipes."""
@@ -1690,7 +1473,6 @@ async def main():
         
         production_bot = ProductionBot(production_token, production_google_client, production_sheet_id)
         bots.append(production_bot)
-        production_bot.export_recipes_to_sheet()
     else:
        logger.info("SECOND_BOT_TOKEN missing. ProductionBot is disabled.")
 
