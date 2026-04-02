@@ -167,6 +167,7 @@ class FinanceBot:
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Displays a help message with all available commands."""
+        logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
         help_text = (
             "Here are the commands you can use:\n\n"
             "**Finance Logging:**\n"
@@ -697,9 +698,13 @@ class ProductionBot:
         # Initialize empty dictionaries
         self.product_categories = {}
         self.recipes = {}
+        self.known_ingredients = {}
 
         # Load data from Google Sheets
-        self._load_recipes_from_sheet()
+        try:
+            self._load_recipes_from_sheet()
+        except Exception as e:
+            logger.error(f"Initial recipe load failed for ProductionBot: {e}")
 
         # Extract all unique ingredients and their common units
         self.known_ingredients = self._get_unique_ingredients_with_units()
@@ -709,60 +714,71 @@ class ProductionBot:
 
     def _load_recipes_from_sheet(self):
         """Fetches the flat table from Google Sheets and reconstructs the nested dictionary."""
-        sheet = self.client.open_by_key(self.production_sheet_id).sheet1
+        if not self.client or not self.production_sheet_id:
+            logger.warning("ProductionBot: Google Client or Sheet ID missing. Skipping recipe load.")
+            return
 
-        # get_all_records() automatically uses Row 1 as dictionary keys
-        records = sheet.get_all_records()
+        try:
+            sheet = self.client.open_by_key(self.production_sheet_id).sheet1
+            # get_all_records() automatically uses Row 1 as dictionary keys
+            records = sheet.get_all_records()
 
-        for row in records:
-            cat = row['Category']
-            prod = row['Product']
+            for row in records:
+                cat = row.get('Category')
+                prod = row.get('Product')
+                if not cat or not prod: continue
 
-            # Ensure numbers are treated as floats
-            bg = float(row['Base Gallons'])
-            amount = float(row['Amount'])
+                # Ensure numbers are treated as floats
+                try:
+                    bg = float(row.get('Base Gallons', 0))
+                    amount = float(row.get('Amount', 0))
+                except (ValueError, TypeError):
+                    continue
 
-            # Build the category level if it doesn't exist
-            if cat not in self.product_categories:
-                self.product_categories[cat] = {}
+                # Build the category level if it doesn't exist
+                if cat not in self.product_categories:
+                    self.product_categories[cat] = {}
 
-            # Build the product level if it doesn't exist
-            if prod not in self.product_categories[cat]:
-                self.product_categories[cat][prod] = {
-                    'base_gallons': bg,
-                    'ingredients': []
-                }
+                # Build the product level if it doesn't exist
+                if prod not in self.product_categories[cat]:
+                    self.product_categories[cat][prod] = {
+                        'base_gallons': bg,
+                        'ingredients': []
+                    }
 
-            # Append the ingredient
-            self.product_categories[cat][prod]['ingredients'].append({
-                'name': row['Ingredient'],
-                'amount': amount,
-                'unit': row['Unit']
-            })
+                # Append the ingredient
+                self.product_categories[cat][prod]['ingredients'].append({
+                    'name': row.get('Ingredient', 'Unknown'),
+                    'amount': amount,
+                    'unit': row.get('Unit', '')
+                })
 
-        # Flatten recipes for easy lookup by name (rebuilding self.recipes)
-        self.recipes = {}
-        for category, products in self.product_categories.items():
-            self.recipes.update(products)
+            # Flatten recipes for easy lookup by name
+            self.recipes = {}
+            for category, products in self.product_categories.items():
+                self.recipes.update(products)
 
-        print(f"Successfully loaded {len(self.recipes)} recipes from Google Sheets.")
+            logger.info(f"Successfully loaded {len(self.recipes)} recipes from Google Sheets.")
+        except Exception as e:
+            logger.error(f"Error loading recipes from Google Sheets: {e}")
 
     async def reload_recipes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Command to refresh recipes from Google Sheets without restarting the bot."""
-        # Optional: Restrict this to your user ID so strangers can't lag your bot
-        # if update.effective_user.id != YOUR_TELEGRAM_ID: return
-
         await update.message.reply_text("🔄 Refreshing recipes from Google Sheets...")
 
         try:
             self._load_recipes_from_sheet()
+            self.known_ingredients = self._get_unique_ingredients_with_units()
             await update.message.reply_text(f"✅ Success! Loaded {len(self.recipes)} recipes.")
         except Exception as e:
+            logger.error(f"Error reloading recipes: {e}")
             await update.message.reply_text(f"❌ Error reloading: {e}")
 
     def _get_unique_ingredients_with_units(self):
         """Extracts all unique ingredient names and their units from recipes."""
         unique_ingredients = {}
+        if not self.recipes:
+            return unique_ingredients
         for product_name, recipe_data in self.recipes.items():
             for ingredient in recipe_data.get('ingredients', []):
                 name = ingredient['name'].strip().lower()
@@ -773,7 +789,17 @@ class ProductionBot:
 
     def _register_handlers(self):
         """Registers all command and message handlers for this bot."""
-        # Conversation Handler for new production log
+        
+        # 1. Global Command Handlers (Highest Priority)
+        self.application.add_handler(CommandHandler('start', self.start_cmd))
+        self.application.add_handler(CommandHandler('help', self.help_cmd))
+        self.application.add_handler(CommandHandler('cancel', self.cancel_global))
+        self.application.add_handler(CommandHandler("reload", self.reload_recipes))
+        self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
+        self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
+        self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd))
+
+        # 2. Conversation Handler for new production log
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler('newlog', self.start_newlog),
@@ -785,7 +811,7 @@ class ProductionBot:
                 SELECT_CATEGORY: [CallbackQueryHandler(self.select_category_callback)],
                 SELECT_PRODUCT: [CallbackQueryHandler(self.select_product_callback)],
                 PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_product_name)],
-                TOTAL_GALLONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
+                TOTAL_GALLATIONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
                 CONFIRM_RECIPE: [CallbackQueryHandler(self.confirm_recipe_callback)],
                 BATCH_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_batch_code)],
                 INGREDIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_name)],
@@ -795,11 +821,14 @@ class ProductionBot:
                 WEIGHED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_weighed_by)],
                 RECEIVED_BY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_received_by)],
             },
-            fallbacks=[CommandHandler('cancel', self.cancel)],
+            fallbacks=[
+                CommandHandler('cancel', self.cancel),
+                CommandHandler('help', self.help_cmd)
+            ],
             allow_reentry=True 
         )
 
-        # Conversation Handler for adding stock
+        # 3. Conversation Handler for adding stock
         add_stock_conv_handler = ConversationHandler(
             entry_points=[CommandHandler('addstock', self.start_add_stock)],
             states={
@@ -809,30 +838,23 @@ class ProductionBot:
                 ADD_STOCK_ENTER_AMOUNT_UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_amount_for_stock)],
                 ADD_STOCK_CONFIRM: [CallbackQueryHandler(self.confirm_add_stock_callback)]
             },
-            fallbacks=[CommandHandler('cancel', self.cancel)],
+            fallbacks=[
+                CommandHandler('cancel', self.cancel),
+                CommandHandler('help', self.help_cmd)
+            ],
             allow_reentry=True
         )
 
-        self.application.add_handler(CommandHandler('start', self.start_cmd))
-        self.application.add_handler(CommandHandler('help', self.help_cmd))
-        self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
-        self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
-        self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd)) # This will be replaced by addstock
-        
         self.application.add_handler(conv_handler)
-        self.application.add_handler(add_stock_conv_handler) # Add the new conversation handler
-        # Add a global /cancel command that works everywhere for this bot
-        self.application.add_handler(CommandHandler('cancel', self.cancel_global))
-
-        self.application.add_handler(CommandHandler("reload", self.reload_recipes))
+        self.application.add_handler(add_stock_conv_handler)
 
     async def cancel_global(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Global cancel command handler."""
-        # This will be handled if not inside a conversation (or if fallbacks fail)
-        await update.message.reply_text("No active command to cancel.")
+        await update.message.reply_text("No active process to cancel. Use /newlog to start one.")
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Displays help for the Production Bot."""
+        logger.info(f"ProductionBot: Help command triggered by user {update.effective_user.id}")
         help_text = (
             "🚀 **Production Bot Help:**\n\n"
             "**Logging Production:**\n"
@@ -853,37 +875,28 @@ class ProductionBot:
         """Checks connectivity to the Google Sheet with detailed diagnostics."""
         status_msg = []
         
-        # 1. Check Client and Email
         if self.client:
             try:
-                # Try to get email from credentials
                 email = "Unknown"
                 if hasattr(self.client.auth, 'service_account_email'):
                     email = self.client.auth.service_account_email
                 elif hasattr(self.client.auth, 'signer_email'):
                     email = self.client.auth.signer_email
-                
                 status_msg.append(f"🤖 **Bot Email**: `{email}`")
             except Exception as e:
                 status_msg.append(f"✅ Client: Initialized (Email fetch error: {e})")
         else:
             status_msg.append("❌ Client: Not Initialized")
             
-        # 2. Check Sheet ID format
         if self.production_sheet_id:
             clean_id = self.production_sheet_id.strip()
             status_msg.append(f"🆔 **Target Sheet ID**: `{clean_id}`")
-            if len(self.production_sheet_id) != len(clean_id):
-                 status_msg.append("⚠️ **WARNING**: ID has leading/trailing whitespace!")
         else:
             status_msg.append("❌ Sheet ID: Not Set")
             
-        # 3. Connectivity Tests
         if self.client:
             try:
                 loop = asyncio.get_running_loop()
-                
-                # Test A: List all accessible sheets
                 status_msg.append("\n🔍 **Scanning accessible sheets...**")
                 try:
                     spreadsheets = await loop.run_in_executor(None, self.client.openall)
@@ -895,12 +908,10 @@ class ProductionBot:
                 except Exception as e:
                     status_msg.append(f"❌ List Error: {str(e)}")
 
-                # Test B: Open specific sheet
                 if self.production_sheet_id:
                     status_msg.append(f"\n🎯 **Testing Target Connection...**")
                     spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
                     status_msg.append(f"✅ Success! Connected to spreadsheet: '{spreadsheet.title}'")
-                    
             except Exception as e:
                 status_msg.append(f"❌ Connection Failed: {str(e)}")
         
@@ -1103,7 +1114,7 @@ class ProductionBot:
     async def more_ingredients_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles callback for adding more ingredients or moving to next step."""
         query = update.callback_query
-        await query.answer() # Acknowledge the callback query
+        await query.answer()
 
         if query.data == 'add_more_ingredients':
             await query.edit_message_text("Okay, what is the **next ingredient**? (e.g., Surfactant X)")
@@ -1133,7 +1144,6 @@ class ProductionBot:
         """Stores who received the production and finalizes the log."""
         context.user_data['log_data']['received_by'] = update.message.text.strip()
         
-        # Finalize and log to Google Sheet
         await update.message.reply_text("All details collected. Logging to Google Sheet...")
         
         if not self.client or not self.production_sheet_id:
@@ -1149,7 +1159,6 @@ class ProductionBot:
         weighed_by = log_data['weighed_by']
         received_by = log_data['received_by']
 
-        # Sanitize product_name for worksheet title
         sanitized_product_name = re.sub(r'[^\w\s-]', '', product_name)
         worksheet_title = f"{date} - {sanitized_product_name}"
 
@@ -1174,7 +1183,6 @@ class ProductionBot:
             
             await loop.run_in_executor(None, lambda: self._insert_production_rows(sheet, rows_to_insert))
             
-            # Update Inventory (subtract used ingredients)
             if log_data['ingredients']:
                 await loop.run_in_executor(None, lambda: self._update_inventory(spreadsheet, log_data['ingredients'], subtract=True))
 
@@ -1183,12 +1191,11 @@ class ProductionBot:
             logger.error(f"Error saving production log to sheet: {e}")
             await update.message.reply_text(f"❌ Error saving production log: {str(e)}")
         
-        context.user_data.pop('log_data', None) # Clear user data
+        context.user_data.pop('log_data', None)
         return ConversationHandler.END
 
     def _insert_production_rows(self, sheet, rows_data):
         """Helper to insert multiple rows into the production sheet (blocking)."""
-        # Check if sheet is empty to add headers
         existing_data = sheet.get_all_values()
         if not existing_data:
             headers = ["Date", "Product Name", "Batch Code", "Ingredient Name", "Amount", "Unit", "Total Gallons", "Weighed By", "Received By"]
@@ -1196,11 +1203,10 @@ class ProductionBot:
             next_row_index = 2
         else:
             next_row_index = len(existing_data) + 1
-
         sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
 
     def _update_inventory(self, spreadsheet, ingredients, subtract=False):
-        """Updates the 'Inventory' sheet by adding or subtracting the specified ingredients."""
+        """Updates the 'Inventory' sheet."""
         try:
             try:
                 inventory_sheet = spreadsheet.worksheet("Inventory")
@@ -1209,14 +1215,13 @@ class ProductionBot:
                 inventory_sheet.insert_row(["Ingredient", "Quantity", "Unit"], index=1)
             
             data = inventory_sheet.get_all_values()
-            if not data or not data[0] or data[0][0].lower() != 'ingredient': # Ensure headers are present
+            if not data or not data[0] or data[0][0].lower() != 'ingredient':
                 headers = ["Ingredient", "Quantity", "Unit"]
-                inventory_sheet.clear() # Clear if headers are missing or incorrect
+                inventory_sheet.clear()
                 inventory_sheet.insert_row(headers, index=1)
                 data = [headers]
             
-            headers = [h.lower() for h in data[0]] # Get headers and convert to lowercase for robust lookup
-            
+            headers = [h.lower() for h in data[0]]
             ing_col_idx = headers.index("ingredient") if "ingredient" in headers else 0
             qty_col_idx = headers.index("quantity") if "quantity" in headers else 1
             unit_col_idx = headers.index("unit") if "unit" in headers else 2
@@ -1224,39 +1229,29 @@ class ProductionBot:
             for ing in ingredients:
                 name = ing['name'].strip().lower()
                 amount = ing['amount']
-                unit = ing['unit'].strip().lower()
-                
-                if subtract:
-                    amount = -amount # Subtract for production, add for stock
+                if subtract: amount = -amount
 
-                row_idx_in_sheet = -1 # 1-based index for gspread
-                
-                # Search for existing ingredient, skipping header row
-                for i, row in enumerate(data[1:], start=2): # Start from 2 for 1-based sheet index
+                row_idx_in_sheet = -1
+                for i, row in enumerate(data[1:], start=2):
                     if len(row) > ing_col_idx and row[ing_col_idx].strip().lower() == name:
                         row_idx_in_sheet = i
                         break
                 
                 if row_idx_in_sheet != -1:
-                    # Update existing row
-                    current_val = data[row_idx_in_sheet-1][qty_col_idx] # data is 0-indexed, sheet is 1-indexed
+                    current_val = data[row_idx_in_sheet-1][qty_col_idx]
                     try:
                         current_qty = float(current_val.replace(',', '')) if current_val else 0.0
                     except ValueError:
-                        current_qty = 0.0 # If current value is not a number, treat as 0
-                    
+                        current_qty = 0.0
                     new_qty = current_qty + amount
-                    inventory_sheet.update_cell(row_idx_in_sheet, qty_col_idx + 1, new_qty) # gspread is 1-indexed for cols
-                    # Update local data to reflect change for subsequent calculations in the same batch
+                    inventory_sheet.update_cell(row_idx_in_sheet, qty_col_idx + 1, new_qty)
                     data[row_idx_in_sheet-1][qty_col_idx] = str(new_qty)
                 else:
-                    # Add new row
                     new_row = [""] * len(headers)
-                    new_row[ing_col_idx] = ing['name'] # Use original case for display
+                    new_row[ing_col_idx] = ing['name']
                     new_row[qty_col_idx] = amount
-                    new_row[unit_col_idx] = unit
+                    new_row[unit_col_idx] = ing['unit']
                     inventory_sheet.append_row(new_row)
-                    # Add to local data
                     data.append(new_row)
         except Exception as e:
             logger.error(f"Error updating inventory: {e}")
@@ -1273,11 +1268,10 @@ class ProductionBot:
             try:
                 inventory_sheet = await loop.run_in_executor(None, lambda: spreadsheet.worksheet("Inventory"))
             except gspread.WorksheetNotFound:
-                await update.message.reply_text("📦 Inventory sheet not found. It will be created when you log a production run or add stock.")
+                await update.message.reply_text("📦 Inventory sheet not found.")
                 return
 
             records = await loop.run_in_executor(None, inventory_sheet.get_all_records)
-            
             if not records:
                 await update.message.reply_text("📦 Inventory is currently empty.")
                 return
@@ -1288,53 +1282,39 @@ class ProductionBot:
                 qty = row.get('Quantity') or row.get('quantity') or 0
                 unit = row.get('Unit') or row.get('unit') or ""
                 response += f"- **{name}**: {qty} {unit}\n"
-            
             await update.message.reply_text(response, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Error fetching inventory: {e}")
             await update.message.reply_text(f"❌ Error fetching inventory: {str(e)}")
 
     async def add_inventory_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Adds stock to the inventory. Usage: /addinv [Item] [Amount] [Unit]"""
-        # This command is being replaced by /addstock, but keeping it for now if needed.
-        # It will be removed once /addstock is fully functional and preferred.
-        await update.message.reply_text("This command is deprecated. Please use /addstock to add items to inventory.")
-        return ConversationHandler.END
+        """Deprecated command."""
+        await update.message.reply_text("Please use /addstock to add items to inventory.")
 
     async def start_add_stock(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Starts the conversation to add stock to inventory."""
         context.user_data['add_stock_data'] = {}
-        
         keyboard = [
             [InlineKeyboardButton("Select Known Ingredient", callback_data='known_ingredient')],
             [InlineKeyboardButton("Add New/Custom Ingredient", callback_data='custom_ingredient')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await update.message.reply_text("How would you like to add stock?", reply_markup=reply_markup)
         return ADD_STOCK_SELECT_TYPE
 
     async def select_ingredient_type_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles selection of ingredient type (known or custom)."""
+        """Handles selection of ingredient type."""
         query = update.callback_query
         await query.answer()
-        
         if query.data == 'known_ingredient':
             if not self.known_ingredients:
-                await query.edit_message_text("No known ingredients found in recipes. Please add a custom ingredient instead.")
+                await query.edit_message_text("No known ingredients found. Please add a custom one.")
                 return ConversationHandler.END
-            
-            # Create a sorted list of unique ingredient names
             ingredient_names = sorted(list(self.known_ingredients.keys()))
-            
-            # Create keyboard with pagination if too many ingredients
-            # For simplicity, let's just list them all for now.
             keyboard = [[InlineKeyboardButton(name.title(), callback_data=name)] for name in ingredient_names]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text("Please select an ingredient to add stock to:", reply_markup=reply_markup)
+            await query.edit_message_text("Please select an ingredient:", reply_markup=reply_markup)
             return ADD_STOCK_SELECT_KNOWN_INGREDIENT
-        
         elif query.data == 'custom_ingredient':
             await query.edit_message_text("Please enter the **name** of the new ingredient:")
             return ADD_STOCK_ENTER_CUSTOM_NAME
@@ -1343,102 +1323,69 @@ class ProductionBot:
         """Handles selection of a known ingredient."""
         query = update.callback_query
         await query.answer()
-        
         ingredient_name = query.data
-        unit = self.known_ingredients.get(ingredient_name, 'unit') # Default to 'unit' if not found
-        
+        unit = self.known_ingredients.get(ingredient_name, 'unit')
         context.user_data['add_stock_data']['name'] = ingredient_name.title()
         context.user_data['add_stock_data']['unit'] = unit
-        
-        await query.edit_message_text(f"Selected **{ingredient_name.title()}** (Unit: {unit}). Please enter the **amount** to add:")
+        await query.edit_message_text(f"Selected **{ingredient_name.title()}** ({unit}). Enter **amount** to add:")
         return ADD_STOCK_ENTER_AMOUNT_UNIT
 
     async def get_custom_ingredient_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gets the name for a custom ingredient."""
         ingredient_name = update.message.text.strip().title()
         context.user_data['add_stock_data']['name'] = ingredient_name
-        await update.message.reply_text(f"What is the **unit** for **{ingredient_name}**? (e.g., kg, liters, pcs)")
-        return ADD_STOCK_ENTER_AMOUNT_UNIT # Reuse state to get amount and unit
+        await update.message.reply_text(f"What is the **unit** for **{ingredient_name}**?")
+        return ADD_STOCK_ENTER_AMOUNT_UNIT
 
     async def get_ingredient_amount_for_stock(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Gets the amount and unit for the ingredient to add to stock."""
+        """Gets the amount and unit for the ingredient."""
         text = update.message.text.strip()
-        
-        ingredient_name = context.user_data['add_stock_data'].get('name')
-        
-        # If unit was not pre-selected (custom ingredient path), try to parse it from the input
         if 'unit' not in context.user_data['add_stock_data']:
             match = re.match(r'(\d+(\.\d+)?)\s*(kg|lbs|gallons|liters|g|ml|pcs|units)', text, re.IGNORECASE)
             if match:
-                amount = float(match.group(1))
-                unit = match.group(3).lower()
-                context.user_data['add_stock_data']['amount'] = amount
-                context.user_data['add_stock_data']['unit'] = unit
+                context.user_data['add_stock_data']['amount'] = float(match.group(1))
+                context.user_data['add_stock_data']['unit'] = match.group(3).lower()
             else:
-                await update.message.reply_text(
-                    "Invalid format. Please provide amount and unit (e.g., 500 kg or 100 lbs)."
-                )
-                return ADD_STOCK_ENTER_AMOUNT_UNIT # Stay in the same state
-        else: # Unit was pre-selected (known ingredient path), expect just amount
+                await update.message.reply_text("Format: [amount] [unit] (e.g., 500 kg)")
+                return ADD_STOCK_ENTER_AMOUNT_UNIT
+        else:
             try:
-                amount = float(text)
-                context.user_data['add_stock_data']['amount'] = amount
+                context.user_data['add_stock_data']['amount'] = float(text)
             except ValueError:
-                await update.message.reply_text("Invalid amount. Please enter a valid number.")
+                await update.message.reply_text("Please enter a valid number.")
                 return ADD_STOCK_ENTER_AMOUNT_UNIT
 
         name = context.user_data['add_stock_data']['name']
         amount = context.user_data['add_stock_data']['amount']
         unit = context.user_data['add_stock_data']['unit']
-        
         msg = f"Confirm adding **{amount} {unit}** of **{name}** to inventory?"
-        
-        keyboard = [
-            [InlineKeyboardButton("✅ Yes, add to stock", callback_data='add_stock_confirm_yes')],
-            [InlineKeyboardButton("❌ No, cancel", callback_data='add_stock_confirm_no')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("✅ Yes", callback_data='add_stock_confirm_yes')],
+                    [InlineKeyboardButton("❌ No", callback_data='add_stock_confirm_no')]]
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return ADD_STOCK_CONFIRM
 
     async def confirm_add_stock_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles confirmation for adding stock."""
         query = update.callback_query
         await query.answer()
-        
         if query.data == 'add_stock_confirm_yes':
-            if not self.client or not self.production_sheet_id:
-                await query.edit_message_text("❌ Error: Production sheet details are not configured. Stock not added.")
-                context.user_data.pop('add_stock_data', None)
-                return ConversationHandler.END
-
             stock_data = context.user_data['add_stock_data']
-            ingredient_to_add = [{
-                'name': stock_data['name'],
-                'amount': stock_data['amount'],
-                'unit': stock_data['unit']
-            }]
-
             try:
                 loop = asyncio.get_running_loop()
                 spreadsheet = await loop.run_in_executor(None, lambda: self.client.open_by_key(self.production_sheet_id))
-                await loop.run_in_executor(None, lambda: self._update_inventory(spreadsheet, ingredient_to_add, subtract=False))
-                await query.edit_message_text(f"✅ Successfully added {stock_data['amount']} {stock_data['unit']} of **{stock_data['name']}** to inventory!")
+                await loop.run_in_executor(None, lambda: self._update_inventory(spreadsheet, [stock_data]))
+                await query.edit_message_text(f"✅ Added {stock_data['amount']} {stock_data['unit']} of **{stock_data['name']}**.")
             except Exception as e:
-                logger.error(f"Error adding stock to inventory: {e}")
-                await query.edit_message_text(f"❌ Error adding stock: {str(e)}")
+                logger.error(f"Error adding stock: {e}")
+                await query.edit_message_text(f"❌ Error: {e}")
         else:
-            await query.edit_message_text("❌ Adding stock cancelled.")
-        
+            await query.edit_message_text("❌ Cancelled.")
         context.user_data.pop('add_stock_data', None)
         return ConversationHandler.END
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Cancels the current conversation."""
-        context.user_data.pop('log_data', None) # Clear any incomplete data for production log
-        context.user_data.pop('add_stock_data', None) # Clear any incomplete data for add stock
-        context.user_data.pop('current_ingredient', None)
+        """Cancels conversation."""
+        context.user_data.clear()
         await update.message.reply_text("Operation cancelled.")
         return ConversationHandler.END
 
@@ -1460,74 +1407,46 @@ class ProductionBot:
 # MAIN EXECUTION
 # ==================================================================================================
 async def main():
-    # 1. Load Environment Variables
     finance_token = os.environ.get('TELEGRAM_BOT_TOKEN')
     production_token = os.environ.get('SECOND_BOT_TOKEN')
-    
     finance_creds_json = os.environ.get('GSPREAD_CREDENTIALS')
     production_creds_json = os.environ.get('PRODUCTION_GSPREAD_CREDENTIALS')
-
-    finance_user_mapping_str = os.environ.get('USER_SHEET_MAPPING', '{}')
-    strict_users_str = os.environ.get('STRICT_MODE_USERS', '[]')
     production_sheet_id = os.environ.get('PRODUCTION_SHEET_ID')
 
-    # 2. Initialize Google Clients for each bot
     finance_google_client = get_google_client(finance_creds_json)
     production_google_client = get_google_client(production_creds_json)
 
-    # 3. Initialize Bot-specific configurations
-    try:
-        finance_user_mapping = json.loads(finance_user_mapping_str)
-    except:
-        logger.error("USER_SHEET_MAPPING is not valid JSON")
-        finance_user_mapping = {}
-
-    try:
-        strict_users = json.loads(strict_users_str)
-    except:
-        logger.error("STRICT_MODE_USERS is not valid JSON")
-        strict_users = []
-
     bots = []
 
-    # 4. Initialize FinanceBot
     if finance_token:
-        if not finance_google_client:
-            logger.warning("FinanceBot is enabled but GSPREAD_CREDENTIALS are missing or invalid. Google Sheets features will be disabled.")
-        finance_bot = FinanceBot(finance_token, finance_google_client, finance_user_mapping, strict_users)
-        bots.append(finance_bot)
-    else:
-        logger.error("TELEGRAM_BOT_TOKEN missing. FinanceBot will not run.")
+        try:
+            finance_user_mapping = json.loads(os.environ.get('USER_SHEET_MAPPING', '{}'))
+            strict_users = json.loads(os.environ.get('STRICT_MODE_USERS', '[]'))
+            finance_bot = FinanceBot(finance_token, finance_google_client, finance_user_mapping, strict_users)
+            bots.append(finance_bot)
+        except Exception as e:
+            logger.error(f"Failed to initialize FinanceBot: {e}")
 
-    # 5. Initialize ProductionBot
     if production_token:
-        if not production_google_client:
-            logger.warning("ProductionBot is enabled but PRODUCTION_GSPREAD_CREDENTIALS are missing or invalid. Google Sheets features will be disabled.")
-        if not production_sheet_id:
-            logger.warning("ProductionBot is enabled but PRODUCTION_SHEET_ID is missing. Google Sheets features will be disabled.")
-        
-        production_bot = ProductionBot(production_token, production_google_client, production_sheet_id)
-        bots.append(production_bot)
-    else:
-       logger.info("SECOND_BOT_TOKEN missing. ProductionBot is disabled.")
+        try:
+            production_bot = ProductionBot(production_token, production_google_client, production_sheet_id)
+            bots.append(production_bot)
+        except Exception as e:
+            logger.error(f"Failed to initialize ProductionBot: {e}")
 
-    # 6. Run Bots
     if not bots:
         logger.error("No bots to run. Exiting.")
         return
 
-    # Start all bots
     for bot in bots:
         await bot.start()
 
-    # Keep the main process alive
     stop_signal = asyncio.Event()
     try:
         await stop_signal.wait()
     except asyncio.CancelledError:
         pass
     finally:
-        # Graceful shutdown
         logger.info("Shutting down bots...")
         for bot in bots:
             await bot.stop()
@@ -1536,5 +1455,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutdown signal received.")
         pass
