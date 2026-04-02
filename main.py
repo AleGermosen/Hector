@@ -811,7 +811,7 @@ class ProductionBot:
                 SELECT_CATEGORY: [CallbackQueryHandler(self.select_category_callback)],
                 SELECT_PRODUCT: [CallbackQueryHandler(self.select_product_callback)],
                 PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_product_name)],
-                TOTAL_GALLATIONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
+                TOTAL_GALLONS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.calculate_recipe)],
                 CONFIRM_RECIPE: [CallbackQueryHandler(self.confirm_recipe_callback)],
                 BATCH_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_batch_code)],
                 INGREDIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.get_ingredient_name)],
