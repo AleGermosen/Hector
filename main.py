@@ -795,7 +795,7 @@ class ProductionBot:
         self.application.add_handler(CommandHandler('help', self.help_cmd))
         self.application.add_handler(CommandHandler('cancel', self.cancel_global))
         self.application.add_handler(CommandHandler("reload", self.reload_recipes))
-        self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
+        # self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
         self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
         self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd))
 
@@ -854,7 +854,7 @@ class ProductionBot:
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Displays help for the Production Bot."""
-        logger.info(f"ProductionBot: Help command triggered by user {update.effective_user.id}")
+        # logger.info(f"ProductionBot: Help command triggered by user {update.effective_user.id}")
         help_text = (
             "🚀 **Production Bot Help:**\n\n"
             "**Logging Production:**\n"
