@@ -150,7 +150,7 @@ class FinanceBot:
             return 0.0
         try:
             # Remove currency symbols and commas
-            clean_str = amount_str.replace('$', '').replace(',', '').strip()
+            clean_str = str(amount_str).replace('$', '').replace(',', '').strip()
             return float(clean_str)
         except ValueError:
             return 0.0
@@ -248,14 +248,22 @@ class FinanceBot:
 
             # Use full timestamp for precision
             date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            row_to_insert = [date, trans_type, account, amount, category, description]
+            
+            rows_to_insert = [[date, trans_type, account, amount, category, description]]
+
+            # Special logic for Savings: treat as transfer to 'Account'
+            if trans_type == 'Expense' and category.lower() == 'savings':
+                rows_to_insert.append([date, "Income", "Account", amount, "Savings", f"Savings from {account} {description}".strip()])
 
             # Run blocking I/O (gspread) in a separate thread
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: self._insert_row(sheet, row_to_insert))
+            if len(rows_to_insert) > 1:
+                await loop.run_in_executor(None, lambda: self._insert_rows(sheet, rows_to_insert))
+                await update.message.reply_text(f"✅ Savings Logged: {account} ➡️ Account ${amount}")
+            else:
+                await loop.run_in_executor(None, lambda: self._insert_row(sheet, rows_to_insert[0]))
+                await update.message.reply_text(f"✅ Logged to your sheet: {trans_type} ${amount}")
 
-            await update.message.reply_text(
-                f"✅ Logged to your sheet: {trans_type} ${amount}")
         except ValueError:
             await update.message.reply_text(f"❌ Usage: [Income/Expense] [Account] [Amount] [Category] [Description]")
         except Exception as e:
@@ -463,8 +471,8 @@ class FinanceBot:
                     amount = self._parse_amount_robust(row[3])
                     category = row[4].strip().capitalize() if len(row) > 4 else ""
                     
-                    # Ignore transfers in Net Worth Calculation (since they are both Income and Expense)
-                    if category == 'Transfer':
+                    # Ignore transfers and savings moves in Net Worth Calculation
+                    if category in ['Transfer']:
                         continue
 
                     if trans_type == 'Income':
@@ -589,7 +597,9 @@ class FinanceBot:
                         continue
 
                     if trans_type == 'Income':
-                        total_income += amount
+                        # Ignore Savings income as it's typically a transfer from another account
+                        if category != 'Savings':
+                            total_income += amount
                     elif trans_type == 'Expense':
                         if category == 'Needs':
                             actual_needs += amount
