@@ -308,6 +308,11 @@ class FinanceBot:
                 except ValueError:
                     continue
 
+            # Check if there are any balances to display
+            if not balances:
+                await update.message.reply_text("No transactions found to calculate balance.")
+                return
+
             response = "💰 **Your Account Balances:**\n"
             for acc, bal in balances.items():
                 response += f"{acc}: ${bal:.2f}\n"
@@ -471,8 +476,8 @@ class FinanceBot:
                     amount = self._parse_amount_robust(row[3])
                     category = row[4].strip().capitalize() if len(row) > 4 else ""
                     
-                    # Ignore transfers and savings moves in Net Worth Calculation
-                    if category in ['Transfer']:
+                    # Ignore transfers and specifically exclude 'Savings' Income for Net Worth calculation
+                    if category == 'Transfer' or (trans_type == 'Income' and category == 'Savings'):
                         continue
 
                     if trans_type == 'Income':
@@ -830,12 +835,16 @@ class ProductionBot:
         """Displays help for the Production Bot."""
         help_text = (
             "🚀 **Production Bot Help:**\n\n"
-            "/newlog - Start a new production batch log by typing the name.\n"
-            "/knownproduct - Start a log by selecting from a list of products.\n"
+            "**Logging Production:**\n"
+            "/newlog (or /nl) - Start a log by typing product name.\n"
+            "/knownproduct (or /kp) - Select product from a list.\n"
+            "/cancel - Cancel the current logging process.\n\n"
+            "**Inventory Management:**\n"
             "/inventory - View current ingredient stock levels.\n"
-            "/addstock - Add stock to an ingredient in the inventory.\n"
+            "/addstock - Add stock to an ingredient.\n\n"
+            "**System Commands:**\n"
+            "/reload - Refresh recipes from Google Sheets.\n"
             "/check_sheet - Check connection to Google Sheets.\n"
-            "/cancel - Cancel the current logging process.\n"
             "/help - Show this help message."
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -908,7 +917,8 @@ class ProductionBot:
         """Handler for the /start command."""
         await update.message.reply_text(
             "Welcome to the Production Bot! I can help you log production runs and track inventory.\n\n"
-            "Use /newlog or /knownproduct to start a run, or /inventory to see stock levels."
+            "Use /newlog or /knownproduct to start a run, or /inventory to see stock levels.\n"
+            "Type /help to see all available commands."
         )
 
     async def start_newlog(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
