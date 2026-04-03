@@ -155,6 +155,53 @@ class FinanceBot:
         except ValueError:
             return 0.0
 
+    def _get_data_summary(self, records, target_month=None, target_year=None):
+        """Calculates financial summary from records."""
+        target_year = target_year or datetime.now().year
+        summary = {
+            'total_income': 0.0,
+            'total_expenses': 0.0,
+            'categories': {'Needs': 0.0, 'Wants': 0.0, 'Savings': 0.0, 'Debt': 0.0},
+            'other_expenses': 0.0
+        }
+        
+        start_index = 1 if len(records) > 0 and (records[0][0].lower() == 'date' or records[0][0] == '') else 0
+
+        for row in records[start_index:]:
+            if len(row) < 4: continue
+            try:
+                # Date filtering
+                if target_month:
+                    row_date = self._parse_date_robust(row[0])
+                    if row_date is None or row_date.month != target_month or row_date.year != target_year:
+                        continue
+
+                trans_type = row[1].strip().capitalize()
+                amount = self._parse_amount_robust(row[3])
+                category = row[4].strip().capitalize() if len(row) > 4 else ""
+
+                # Ignore transfers and specifically exclude 'Savings' Income for Net Worth calculation
+                if category == 'Transfer' or (trans_type == 'Income' and category == 'Savings'):
+                    continue
+
+                if trans_type == 'Income':
+                    summary['total_income'] += amount
+                elif trans_type == 'Expense':
+                    summary['total_expenses'] += amount
+                    if category in summary['categories']:
+                        summary['categories'][category] += amount
+                    else:
+                        match = next((k for k in summary['categories'].keys() if k.lower() == category.lower()), None)
+                        if match:
+                            summary['categories'][match] += amount
+                        else:
+                            summary['other_expenses'] += amount
+            except Exception:
+                continue
+        
+        summary['net_worth'] = summary['total_income'] - summary['total_expenses']
+        return summary
+
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for /start command."""
         user_id = update.message.from_user.id
@@ -358,49 +405,16 @@ class FinanceBot:
             loop = asyncio.get_running_loop()
             records = await loop.run_in_executor(None, sheet.get_all_values)
 
-            categories = {'Needs': 0.0, 'Wants': 0.0, 'Savings': 0.0, 'Debt': 0.0}
+            summary = self._get_data_summary(records, target_month, target_year)
+            categories = summary['categories']
             
-            # Skip header row if present, assuming first row is header
-            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
-
-            for row in records[start_index:]:
-                if len(row) < 5: continue
-                try:
-                    # Date filtering
-                    if target_month:
-                        row_date = self._parse_date_robust(row[0])
-                        
-                        # If parsing failed, or if date doesn't match, skip row
-                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
-                            continue
-
-                    # Assuming columns: Date, Type, Account, Amount, Category
-                    trans_type = row[1].strip().capitalize()
-                    if trans_type != 'Expense':
-                        continue
-                        
-                    amount = self._parse_amount_robust(row[3])
-                    category = row[4].strip().capitalize()
-                    
-                    # Normalize category names
-                    if category in categories:
-                        categories[category] += amount
-                    else:
-                        # Try to match case-insensitive
-                        match = next((k for k in categories.keys() if k.lower() == category.lower()), None)
-                        if match:
-                            categories[match] += amount
-                        # Else ignore or add to 'Other' if desired, but user asked for specific categories
-                except ValueError:
-                    continue
-
             # Filter out zero values
             labels = [k for k, v in categories.items() if v > 0]
             sizes = [v for k, v in categories.items() if v > 0]
-            total_expenses = sum(sizes)
+            total_categorized_expenses = sum(sizes)
 
-            if not sizes:
-                msg = "No expenses found in the specified categories"
+            if not sizes and summary['other_expenses'] == 0:
+                msg = "No expenses found"
                 if target_month:
                     month_name = datetime(target_year, target_month, 1).strftime("%B")
                     msg += f" for {month_name} {target_year}"
@@ -409,25 +423,35 @@ class FinanceBot:
                 return
 
             # Create Pie Chart
-            fig, ax = plt.subplots()
-            ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
-            ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
-            plt.title(chart_title)
+            buf = None
+            if sizes:
+                fig, ax = plt.subplots()
+                ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+                ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+                plt.title(chart_title)
 
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png')
-            buf.seek(0)
-            plt.close(fig)
+                # Save to buffer
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png')
+                buf.seek(0)
+                plt.close(fig)
 
             # Generate text breakdown
             breakdown_text = f"📊 **{chart_title}:**\n"
             for label, size in zip(labels, sizes):
-                percentage = (size / total_expenses) * 100
-                breakdown_text += f"- **{label}**: ${size:.2f} ({percentage:.1f}%)\n"
-            breakdown_text += f"\n**Total Expenses**: ${total_expenses:.2f}"
+                percentage = (size / total_categorized_expenses) * 100 if total_categorized_expenses > 0 else 0
+                breakdown_text += f"- **{label}**: ${size:,.2f} ({percentage:.1f}%)\n"
+            
+            if summary['other_expenses'] > 0:
+                breakdown_text += f"- **Other**: ${summary['other_expenses']:,.2f}\n"
 
-            await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+            breakdown_text += f"\n**Total Expenses**: ${summary['total_expenses']:,.2f}"
+            breakdown_text += f"\n**Net Worth**: **${summary['net_worth']:,.2f}**"
+
+            if buf:
+                await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(breakdown_text, parse_mode='Markdown')
 
         except Exception as e:
             logger.error(f"Chart Error: {e}")
@@ -459,41 +483,15 @@ class FinanceBot:
             loop = asyncio.get_running_loop()
             records = await loop.run_in_executor(None, sheet.get_all_values)
 
-            total_income = 0.0
-            total_expenses = 0.0
+            summary = self._get_data_summary(records, target_month, target_year)
+            total_income = summary['total_income']
+            total_expenses = summary['total_expenses']
+            net_worth = summary['net_worth']
             
-            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
-
-            for row in records[start_index:]:
-                if len(row) < 4: continue
-                try:
-                    # Date filtering
-                    if target_month:
-                        row_date = self._parse_date_robust(row[0])
-                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
-                            continue
-
-                    trans_type = row[1].strip().capitalize()
-                    amount = self._parse_amount_robust(row[3])
-                    category = row[4].strip().capitalize() if len(row) > 4 else ""
-                    
-                    # Ignore transfers and specifically exclude 'Savings' Income for Net Worth calculation
-                    if category == 'Transfer' or (trans_type == 'Income' and category == 'Savings'):
-                        continue
-
-                    if trans_type == 'Income':
-                        total_income += amount
-                    elif trans_type == 'Expense':
-                        total_expenses += amount
-                except ValueError:
-                    continue
-
             if total_income == 0 and total_expenses == 0:
                 await update.message.reply_text(f"No records found {title_suffix.lower()}.")
                 return
 
-            net_worth = total_income - total_expenses
-            
             # Avoid division by zero
             if total_income > 0:
                 expense_percentage = (total_expenses / total_income) * 100
@@ -578,47 +576,16 @@ class FinanceBot:
             loop = asyncio.get_running_loop()
             records = await loop.run_in_executor(None, sheet.get_all_values)
 
-            total_income = 0.0
-            actual_needs = 0.0
-            actual_wants = 0.0
-            actual_savings = 0.0
-            
-            start_index = 1 if len(records) > 0 and records[0][0].lower() == 'date' else 0
-
-            for row in records[start_index:]:
-                if len(row) < 4: continue
-                try:
-                    # Date filtering
-                    if target_month:
-                        row_date = self._parse_date_robust(row[0])
-                        if row_date is None or row_date.month != target_month or row_date.year != target_year:
-                            continue
-
-                    trans_type = row[1].strip().capitalize()
-                    amount = self._parse_amount_robust(row[3])
-                    category = row[4].strip().capitalize() if len(row) > 4 else "Other"
-                    
-                    # Ignore transfers in Budget Calculation
-                    if category == 'Transfer':
-                        continue
-
-                    if trans_type == 'Income':
-                        # Ignore Savings income as it's typically a transfer from another account
-                        if category != 'Savings':
-                            total_income += amount
-                    elif trans_type == 'Expense':
-                        if category == 'Needs':
-                            actual_needs += amount
-                        elif category == 'Wants':
-                            actual_wants += amount
-                        elif category in ['Savings', 'Debt']:
-                            actual_savings += amount
-                except ValueError:
-                    continue
+            summary = self._get_data_summary(records, target_month, target_year)
+            total_income = summary['total_income']
 
             if total_income <= 0:
                 await update.message.reply_text(f"No income recorded {title_suffix.lower()}. Cannot calculate budget.")
                 return
+
+            actual_needs = summary['categories']['Needs']
+            actual_wants = summary['categories']['Wants']
+            actual_savings = summary['categories']['Savings'] + summary['categories']['Debt']
 
             budget_needs = total_income * 0.5
             budget_wants = total_income * 0.3
@@ -638,7 +605,8 @@ class FinanceBot:
                 f"🎉 **Wants (30%)**: ${budget_wants:,.2f}\n"
                 f"   Spent: ${actual_wants:,.2f} -> {get_status(actual_wants, budget_wants)}\n\n"
                 f"📈 **Savings/Debt (20%)**: ${budget_savings:,.2f}\n"
-                f"   Spent: ${actual_savings:,.2f} -> {get_status(actual_savings, budget_savings)}"
+                f"   Spent: ${actual_savings:,.2f} -> {get_status(actual_savings, budget_savings)}\n\n"
+                f"**Net Worth**: **${summary['net_worth']:,.2f}**"
             )
 
             await update.message.reply_text(response, parse_mode='Markdown')
@@ -795,7 +763,7 @@ class ProductionBot:
         self.application.add_handler(CommandHandler('help', self.help_cmd))
         self.application.add_handler(CommandHandler('cancel', self.cancel_global))
         self.application.add_handler(CommandHandler("reload", self.reload_recipes))
-        # self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
+        self.application.add_handler(CommandHandler('check_sheet', self.check_sheet_cmd))
         self.application.add_handler(CommandHandler('inventory', self.inventory_cmd))
         self.application.add_handler(CommandHandler('addinv', self.add_inventory_cmd))
 
