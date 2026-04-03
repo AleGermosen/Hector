@@ -854,22 +854,38 @@ class ProductionBot:
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Displays help for the Production Bot."""
-        # logger.info(f"ProductionBot: Help command triggered by user {update.effective_user.id}")
-        help_text = (
-            "🚀 **Production Bot Help:**\n\n"
-            "**Logging Production:**\n"
-            "/newlog (or /nl) - Start a log by typing product name.\n"
-            "/knownproduct (or /kp) - Select product from a list.\n"
-            "/cancel - Cancel the current logging process.\n\n"
-            "**Inventory Management:**\n"
-            "/inventory - View current ingredient stock levels.\n"
-            "/addstock - Add stock to an ingredient.\n\n"
-            "**System Commands:**\n"
-            "/reload - Refresh recipes from Google Sheets.\n"
-            "/check_sheet - Check connection to Google Sheets.\n"
-            "/help - Show this help message."
-        )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        try:
+            logger.info(f"ProductionBot: Help command triggered by user {update.effective_user.id}")
+            help_text = (
+                "🚀 **Production Bot Help:**\n\n"
+                "**Logging Production:**\n"
+                "/newlog (or /nl) - Start a log by typing product name.\n"
+                "/knownproduct (or /kp) - Select product from a list.\n"
+                "/cancel - Cancel the current logging process.\n\n"
+                "**Inventory Management:**\n"
+                "/inventory - View current ingredient stock levels.\n"
+                "/addstock - Add stock to an ingredient.\n\n"
+                "**System Commands:**\n"
+                "/reload - Refresh recipes from Google Sheets.\n"
+                "/check\_sheet - Check connection to Google Sheets.\n"
+                "/help - Show this help message."
+            )
+            # Use effective_message to handle both messages and callback queries
+            if update.effective_message:
+                await update.effective_message.reply_text(help_text, parse_mode='Markdown')
+            else:
+                # Fallback if effective_message is not available
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=help_text, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"ProductionBot Error in help_cmd: {e}")
+            error_details = f"❌ **Error in /help command:**\n`{str(e)}`"
+            try:
+                if update.effective_message:
+                    await update.effective_message.reply_text(error_details, parse_mode='Markdown')
+                else:
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=error_details, parse_mode='Markdown')
+            except:
+                pass # Give up if even error reporting fails
 
     async def check_sheet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Checks connectivity to the Google Sheet with detailed diagnostics."""
