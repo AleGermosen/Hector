@@ -667,3 +667,152 @@ def test_html_escape_ampersand():
 
 def test_html_escape_angle_brackets():
     assert html.escape("<script>") == "&lt;script&gt;"
+
+
+# ── Phase 3 tests ─────────────────────────────────────────────────────────────
+
+import time as _time_mod
+from finance.bot import _with_retry, _SHEET_CACHE_TTL, _LEDGER_CACHE_TTL, _RETRY_MAX_ATTEMPTS
+
+# Task 3: retry helper ────────────────────────────────────────────────────────
+
+class FakeAPIError(Exception):
+    def __init__(self, status_code):
+        self.response = type('R', (), {'status_code': status_code})()
+        super().__init__(f"HTTP {status_code}")
+
+@pytest.mark.asyncio
+async def test_retry_read_succeeds_after_503():
+    """Reads should retry on 503 and eventually succeed."""
+    calls = []
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise FakeAPIError(503)
+        return "ok"
+    result = await _with_retry(flaky, is_write=False)
+    assert result == "ok"
+    assert len(calls) == 3
+
+@pytest.mark.asyncio
+async def test_retry_write_does_not_retry_on_503():
+    """Writes must NOT retry on 503 — the write may have already applied."""
+    calls = []
+    async def flaky():
+        calls.append(1)
+        raise FakeAPIError(503)
+    with pytest.raises(FakeAPIError):
+        await _with_retry(flaky, is_write=True)
+    assert len(calls) == 1
+
+@pytest.mark.asyncio
+async def test_retry_write_retries_on_429():
+    """Writes should retry on 429 (rate-limited, not applied)."""
+    calls = []
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 2:
+            raise FakeAPIError(429)
+        return "wrote"
+    result = await _with_retry(flaky, is_write=True)
+    assert result == "wrote"
+    assert len(calls) == 2
+
+@pytest.mark.asyncio
+async def test_retry_gives_up_after_max_attempts():
+    """Retry must not loop forever — gives up after _RETRY_MAX_ATTEMPTS."""
+    calls = []
+    async def always_fails():
+        calls.append(1)
+        raise FakeAPIError(503)
+    with pytest.raises(FakeAPIError):
+        await _with_retry(always_fails, is_write=False)
+    assert len(calls) == _RETRY_MAX_ATTEMPTS
+
+# Task 3: sheet cache ─────────────────────────────────────────────────────────
+
+def make_bot_with_fake_client(sheet_obj):
+    """Build a FinanceBot instance with a fake Google client."""
+    b = FinanceBot.__new__(FinanceBot)
+    b.strict_users = []
+    b.user_mapping = {"99": "MySheet"}
+    b._sheet_cache = {}
+    b._ledger_cache = {}
+    b.client = type('Client', (), {'open': lambda self, name: type('SS', (), {'sheet1': sheet_obj})()})()
+    return b
+
+def test_sheet_cache_returns_same_handle():
+    sheet_obj = object()
+    b = make_bot_with_fake_client(sheet_obj)
+    s1 = b.get_user_sheet(99)
+    s2 = b.get_user_sheet(99)
+    assert s1 is s2
+
+def test_sheet_cache_refetches_after_expiry(monkeypatch):
+    fetches = []
+    sentinel1 = object()
+    sentinel2 = object()
+    sheets = [sentinel1, sentinel2]
+
+    class FakeClient:
+        def open(self, name):
+            fetches.append(name)
+            return type('SS', (), {'sheet1': sheets.pop(0)})()
+
+    b = FinanceBot.__new__(FinanceBot)
+    b.strict_users = []
+    b.user_mapping = {"99": "MySheet"}
+    b._sheet_cache = {}
+    b._ledger_cache = {}
+    b.client = FakeClient()
+
+    # First fetch
+    s1 = b.get_user_sheet(99)
+    # Expire the cache
+    b._sheet_cache["MySheet"] = (s1, _time_mod.monotonic() - 1)
+    # Second fetch should call open() again
+    s2 = b.get_user_sheet(99)
+    assert s1 is not s2
+    assert len(fetches) == 2
+
+# Task 4: ledger cache ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ledger_cache_avoids_second_network_call():
+    """After a read, the same rows are returned without hitting the sheet again."""
+    calls = []
+    class FakeSheet:
+        def get_all_values(self):
+            calls.append(1)
+            return [["2024-01-01", "Income", "Cash", "100", "Salary", ""]]
+
+    b = FinanceBot.__new__(FinanceBot)
+    b._ledger_cache = {}
+    b._sheet_cache = {}
+    sheet = FakeSheet()
+
+    r1 = await b._get_all_values(sheet, "99")
+    r2 = await b._get_all_values(sheet, "99")
+    assert r1 == r2
+    assert len(calls) == 1  # only one actual network call
+
+@pytest.mark.asyncio
+async def test_ledger_cache_invalidated_after_write():
+    """After _invalidate_ledger_cache, the next read goes to the sheet."""
+    calls = []
+    class FakeSheet:
+        def get_all_values(self):
+            calls.append(1)
+            return []
+        def append_row(self, row, table_range=None):
+            pass
+
+    b = FinanceBot.__new__(FinanceBot)
+    b._ledger_cache = {}
+    b._sheet_cache = {}
+    sheet = FakeSheet()
+
+    await b._get_all_values(sheet, "99")
+    b._invalidate_ledger_cache("99")
+    await b._get_all_values(sheet, "99")
+    assert len(calls) == 2  # fetched twice because cache was cleared

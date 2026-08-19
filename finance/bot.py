@@ -1,10 +1,12 @@
 import ast as _ast
 import logging
 import asyncio
+import random
 import re
 import io
 import calendar
 import os
+import time as _time
 import traceback
 import uuid
 import zoneinfo
@@ -226,12 +228,48 @@ def _safe_eval(expr: str) -> float:
     return float(result)
 
 
+# ── Sheet access: caching and retry ──────────────────────────────────────────
+
+_SHEET_CACHE_TTL = 600      # seconds — refetch the worksheet handle every 10 min
+_LEDGER_CACHE_TTL = 60      # seconds — re-pull raw rows at most once a minute
+_RETRY_BASE = 1.0           # seconds — first backoff interval
+_RETRY_MAX_ATTEMPTS = 4
+
+
+def _backoff_sleep(attempt: int) -> float:
+    """Exponential backoff with jitter: 1s, 2s, 4s, 8s ± 20%."""
+    delay = _RETRY_BASE * (2 ** attempt)
+    return delay * (0.8 + 0.4 * random.random())
+
+
+async def _with_retry(coro_fn, *, is_write: bool = False):
+    """
+    Retry a gspread coroutine on transient errors.
+    Reads retry on 429, 500, 503.
+    Writes retry on 429 only — a 500/503 may have already applied.
+    """
+    for attempt in range(_RETRY_MAX_ATTEMPTS):
+        try:
+            return await coro_fn()
+        except Exception as exc:
+            status = getattr(exc, 'response', None)
+            status = getattr(status, 'status_code', None) if status else None
+            retryable = status in (429,) if is_write else status in (429, 500, 503)
+            if not retryable or attempt == _RETRY_MAX_ATTEMPTS - 1:
+                raise
+            sleep_for = _backoff_sleep(attempt)
+            logger.warning(f"gspread error (status={status}), retry {attempt+1} in {sleep_for:.1f}s: {exc}")
+            await asyncio.sleep(sleep_for)
+
+
 class FinanceBot:
     def __init__(self, token, google_client, user_mapping, strict_users=None):
         self.token = token
         self.client = google_client
         self.user_mapping = user_mapping
         self.strict_users = strict_users or []
+        self._sheet_cache: dict[str, tuple[object, float]] = {}   # key → (sheet, expires_at)
+        self._ledger_cache: dict[str, tuple[list, float]] = {}    # user_id → (rows, expires_at)
         self.application = ApplicationBuilder().token(self.token).build()
         self._register_handlers()
         self.application.add_error_handler(self._error_handler)
@@ -291,11 +329,34 @@ class FinanceBot:
         sheet_identifier = self.user_mapping.get(str(user_id))
         if not sheet_identifier:
             return None
+        cached, expires_at = self._sheet_cache.get(sheet_identifier, (None, 0))
+        if cached is not None and _time.monotonic() < expires_at:
+            return cached
         try:
-            return self.client.open(sheet_identifier).sheet1
+            sheet = self.client.open(sheet_identifier).sheet1
+            self._sheet_cache[sheet_identifier] = (sheet, _time.monotonic() + _SHEET_CACHE_TTL)
+            return sheet
         except Exception as e:
+            self._sheet_cache.pop(sheet_identifier, None)  # force refetch next time
             logger.error(f"Could not open sheet for user {user_id}: {e}")
             return None
+
+    def _invalidate_ledger_cache(self, user_id):
+        self._ledger_cache.pop(str(user_id), None)
+
+    async def _get_all_values(self, sheet, user_id: str) -> list:
+        """Fetch (or return cached) raw rows for a user's sheet."""
+        uid = str(user_id)
+        cached, expires_at = self._ledger_cache.get(uid, (None, 0))
+        if cached is not None and _time.monotonic() < expires_at:
+            return cached
+        loop = asyncio.get_running_loop()
+        rows = await _with_retry(
+            lambda: loop.run_in_executor(None, sheet.get_all_values),
+            is_write=False,
+        )
+        self._ledger_cache[uid] = (rows, _time.monotonic() + _LEDGER_CACHE_TTL)
+        return rows
 
     def _parse_date_robust(self, date_str):
         return _parse_date(date_str)
@@ -757,6 +818,21 @@ class FinanceBot:
     def _insert_rows(self, sheet, rows_data):
         sheet.append_rows(rows_data, table_range='A1')
 
+    async def _write_rows(self, sheet, rows_data: list, user_id) -> None:
+        """Append rows with retry (429 only) and cache invalidation."""
+        loop = asyncio.get_running_loop()
+        if len(rows_data) == 1:
+            await _with_retry(
+                lambda: loop.run_in_executor(None, lambda: self._insert_row(sheet, rows_data[0])),
+                is_write=True,
+            )
+        else:
+            await _with_retry(
+                lambda: loop.run_in_executor(None, lambda: self._insert_rows(sheet, rows_data)),
+                is_write=True,
+            )
+        self._invalidate_ledger_cache(user_id)
+
     async def _show_preview(self, message, context, rows, preview, sheet):
         """Shared helper: shows the transaction preview with confirm/cancel buttons.
         Checks for anomalies if it's an expense. Called from both freetext and /log flows."""
@@ -768,7 +844,7 @@ class FinanceBot:
         if row[1] == 'Expense' and row[4] != 'Transfer':
             try:
                 loop = asyncio.get_running_loop()
-                records = await loop.run_in_executor(None, sheet.get_all_values)
+                records = await self._get_all_values(sheet, user_id)
                 avg = self._get_category_average(records, row[4])
                 amount = float(row[3])
                 if avg > 0 and amount >= avg * 3:
@@ -827,14 +903,10 @@ class FinanceBot:
             return ConversationHandler.END
 
         try:
-            loop = asyncio.get_running_loop()
-            if len(rows) > 1:
-                await loop.run_in_executor(None, lambda: self._insert_rows(sheet, rows))
-            else:
-                await loop.run_in_executor(None, lambda: self._insert_row(sheet, rows[0]))
+            await self._write_rows(sheet, rows, user_id)
 
             # Fetch updated records once — used for both balance and budget alert
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             balances = self._get_balance_by_account(records)
 
             row = rows[0]
@@ -946,7 +1018,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             balances = self._get_balance_by_account(records)
 
             if not balances:
@@ -1000,7 +1072,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             categories = summary['categories']
 
@@ -1067,7 +1139,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             total_income = summary['total_income']
             total_expenses = summary['total_expenses']
@@ -1144,7 +1216,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             total_income = summary['total_income']
 
@@ -1208,7 +1280,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             txs = parse_rows(records, month, year)
 
             set_aside = sum(t.amount for t in txs if t.type == 'Expense' and t.category.lower() == 'savings')
@@ -1278,7 +1350,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
 
             curr = self._get_data_summary(records, target_month, target_year)
             prev = self._get_data_summary(records, prev_month, prev_year)
@@ -1363,7 +1435,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             top = self._get_top_expenses(records, target_month, target_year)
 
             if not top:
@@ -1394,7 +1466,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
             s = self._get_data_summary(records, year_only=True, target_year=year)
 
             if s['total_income'] == 0 and s['total_expenses'] == 0:
@@ -1438,7 +1510,7 @@ class FinanceBot:
 
         try:
             loop = asyncio.get_running_loop()
-            records = await loop.run_in_executor(None, sheet.get_all_values)
+            records = await self._get_all_values(sheet, user_id)
 
             balances = self._get_balance_by_account(records)
             s = self._get_data_summary(records, now_dt.month, now_dt.year)
@@ -1649,7 +1721,7 @@ class FinanceBot:
         if sheet:
             try:
                 loop = asyncio.get_running_loop()
-                records = await loop.run_in_executor(None, sheet.get_all_values)
+                records = await self._get_all_values(sheet, user_id)
                 known_accounts = self._get_known_accounts(records)
             except Exception:
                 pass
@@ -1884,10 +1956,7 @@ class FinanceBot:
                     for row in rows:
                         row[0] = now_str
 
-                    if len(rows) > 1:
-                        await loop.run_in_executor(None, lambda: self._insert_rows(sheet, rows))
-                    else:
-                        await loop.run_in_executor(None, lambda: self._insert_row(sheet, rows[0]))
+                    await self._write_rows(sheet, rows, user_id)
 
                     # Mark as logged today
                     await loop.run_in_executor(None, lambda: ws.update_cell(item['row_index'], 4, today_str))
