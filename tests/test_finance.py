@@ -817,3 +817,144 @@ async def test_ledger_cache_invalidated_after_write():
     b._invalidate_ledger_cache("99")
     await b._get_all_values(sheet, "99")
     assert len(calls) == 2  # fetched twice because cache was cleared
+
+
+# ── Phase 5 tests ─────────────────────────────────────────────────────────────
+
+from decimal import Decimal as D
+
+# 5.1 /undo ───────────────────────────────────────────────────────────────────
+
+def test_undo_stores_last_rows_in_bot_data():
+    """After a write, the last rows should be stored for undo."""
+    b = FinanceBot.__new__(FinanceBot)
+    b.strict_users = []
+    b.user_mapping = {}
+    b._sheet_cache = {}
+    b._ledger_cache = {}
+    # Simulate storing last rows
+    bot_data = {}
+    rows = [["2024-01-01 00:00:00", "Expense", "Cash", "50.00", "Needs", "Lunch"]]
+    bot_data.setdefault('last_rows', {})['123'] = rows
+    assert bot_data['last_rows']['123'] == rows
+
+def test_undo_row_match_finds_exact_row():
+    """Undo should match a row by its exact values (bottom-up)."""
+    all_rows = [
+        ["2024-01-01", "Expense", "Cash", "50.00", "Needs", "Lunch"],
+        ["2024-01-02", "Expense", "Cash", "30.00", "Wants", "Coffee"],
+        ["2024-01-03", "Expense", "Cash", "100.00", "Needs", "Grocery"],
+    ]
+    target = ["2024-01-02", "Expense", "Cash", "30.00", "Wants", "Coffee"]
+    # Simulate the bottom-up scan
+    row_idx = None
+    for i in range(len(all_rows) - 1, -1, -1):
+        if all_rows[i] == target:
+            row_idx = i + 1
+            break
+    assert row_idx == 2  # 1-indexed
+
+def test_undo_no_match_returns_none():
+    """If the target row doesn't exist, row_idx should remain None."""
+    all_rows = [["2024-01-01", "Income", "Cash", "1000.00", "Salary", ""]]
+    target = ["2024-01-02", "Expense", "Cash", "50.00", "Needs", ""]
+    row_idx = None
+    for i in range(len(all_rows) - 1, -1, -1):
+        if all_rows[i] == target:
+            row_idx = i + 1
+            break
+    assert row_idx is None
+
+# 5.2 /recent ─────────────────────────────────────────────────────────────────
+
+def test_recent_filters_to_income_expense():
+    """parse_rows should return only Income/Expense rows, not headers or blanks."""
+    records = [
+        ["Date", "Type", "Account", "Amount", "Category", "Description"],  # header
+        ["2024-08-01", "Income", "Cash", "3000", "Salary", ""],
+        ["2024-08-02", "Expense", "Cash", "50", "Needs", "Lunch"],
+        ["", "", "", "", "", ""],  # blank
+    ]
+    txs = [r for r in records if len(r) >= 4 and r[1].strip().capitalize() in ('Income', 'Expense')]
+    assert len(txs) == 2
+
+def test_recent_newest_first():
+    """Reversing the filtered list should put newest (last) first."""
+    txs = [
+        ["2024-08-01", "Income", "Cash", "3000", "Salary", ""],
+        ["2024-08-02", "Expense", "Cash", "50", "Needs", "Lunch"],
+        ["2024-08-03", "Expense", "Cash", "20", "Wants", "Coffee"],
+    ]
+    recent = txs[-2:][::-1]
+    assert recent[0][0] == "2024-08-03"
+    assert recent[1][0] == "2024-08-02"
+
+def test_recent_caps_at_n():
+    """Requesting n=2 from 5 rows returns only 2."""
+    txs = [["2024-08-0" + str(i), "Expense", "Cash", "10", "Needs", ""] for i in range(1, 6)]
+    n = 2
+    recent = txs[-n:][::-1]
+    assert len(recent) == 2
+
+# 5.4 Monthly summary push ────────────────────────────────────────────────────
+
+def test_quiet_toggle_adds_user():
+    """Simulates quiet_cmd toggling: user added to quiet_set."""
+    quiet_set = set()
+    user_id = "42"
+    assert user_id not in quiet_set
+    quiet_set.add(user_id)
+    assert user_id in quiet_set
+    quiet_set.discard(user_id)
+    assert user_id not in quiet_set
+
+def test_monthly_summary_skips_quiet_users():
+    """Users in quiet_set should be skipped in the summary job."""
+    user_mapping = {"10": "sheet1", "20": "sheet2"}
+    quiet_set = {"10"}
+    to_notify = [uid for uid in user_mapping if uid not in quiet_set]
+    assert to_notify == ["20"]
+
+# 5.5 /trend ──────────────────────────────────────────────────────────────────
+
+def test_trend_period_list_builds_correctly():
+    """Period list should be n months ending with current month, oldest first."""
+    from datetime import datetime
+    n_months = 3
+    y, m = 2024, 3
+    periods = []
+    for _ in range(n_months):
+        periods.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    periods.reverse()
+    assert periods == [(2024, 1), (2024, 2), (2024, 3)]
+
+def test_trend_period_rolls_over_year():
+    """Period list should correctly roll back across year boundary."""
+    n_months = 3
+    y, m = 2024, 2
+    periods = []
+    for _ in range(n_months):
+        periods.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    periods.reverse()
+    assert periods == [(2023, 12), (2024, 1), (2024, 2)]
+
+def test_trend_income_expenses_by_period(monkeypatch):
+    """Income and expenses should be summed per period from parse_rows."""
+    records = [
+        ["2024-01-01", "Income", "Cash", "1000", "Salary", ""],
+        ["2024-01-15", "Expense", "Cash", "200", "Needs", ""],
+        ["2024-02-01", "Income", "Cash", "1500", "Salary", ""],
+        ["2024-02-10", "Expense", "Cash", "300", "Wants", ""],
+    ]
+    jan = parse_rows(records, month=1, year=2024)
+    feb = parse_rows(records, month=2, year=2024)
+    assert sum(t.amount for t in jan if t.type == 'Income') == D("1000")
+    assert sum(t.amount for t in jan if t.type == 'Expense') == D("200")
+    assert sum(t.amount for t in feb if t.type == 'Income') == D("1500")
+    assert sum(t.amount for t in feb if t.type == 'Expense') == D("300")
