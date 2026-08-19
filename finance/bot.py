@@ -17,13 +17,36 @@ from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler,
     filters, ConversationHandler, CallbackQueryHandler
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Command registry — single source of truth for menu and /help ──────────────
+COMMANDS = [
+    ("dash",          "Full snapshot: balances, budget, savings rate"),
+    ("summary",       "This month's income, expenses, net & trends"),
+    ("top",           "Top 5 expenses this month"),
+    ("ytd",           "Year-to-date totals and savings rate"),
+    ("net",           "Net worth breakdown with chart"),
+    ("expenses",      "Expense pie chart (all time or by month)"),
+    ("calcExpenses",  "Budget status using the 50/30/20 rule"),
+    ("balance",       "Current account balances"),
+    ("savings",       "Savings pot: set aside, withdrawn, and net"),
+    ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
+    ("log",           "Step-by-step guided transaction entry"),
+    ("recurring",     "Manage recurring monthly transactions"),
+    ("goals",         "Show all savings goals with progress"),
+    ("setgoal",       "Create or update a savings goal"),
+    ("addtogoal",     "Add savings to a goal"),
+    ("calc",          "Calculator — e.g. /calc 5 * 2"),
+    ("start",         "Check your authorization"),
+    ("help",          "Show this command list"),
+    ("cancel",        "Cancel the current operation"),
+]
 
 # ── Neutral categories: internal money movements, not income or spending ──────
 NEUTRAL_CATEGORIES = {"transfer", "savings"}
@@ -292,6 +315,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('setgoal', self.setgoal_cmd))
         self.application.add_handler(CommandHandler('goals', self.goals_cmd))
         self.application.add_handler(CommandHandler('addtogoal', self.addtogoal_cmd))
+        self.application.add_handler(CommandHandler('cancel', self.cancel_transaction))
 
         # Guided logging flow: /log
         log_conv = ConversationHandler(
@@ -966,47 +990,23 @@ class FinanceBot:
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
-        help_text = (
-            "<b>Finance Logging:</b>\n"
-            "<code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>\n"
-            "Example: <code>Expense Cash 15.50 Needs Lunch</code>\n\n"
-            "<b>Transfers:</b>\n"
-            "<code>Transfer [From] to [To] [Amount]</code>\n"
-            "Example: <code>Transfer Digital to Cash 1500</code>\n\n"
-            "<b>Analysis:</b>\n"
-            "/dash - Full snapshot: balances, budget, savings rate.\n"
-            "/summary - This month's income, expenses, net & trends.\n"
-            "/summary [month] - Summary for a specific month.\n"
-            "/top - Top 5 expenses this month.\n"
-            "/top [month] - Top 5 expenses for a specific month.\n"
-            "/ytd - Year-to-date totals and savings rate.\n"
-            "/net - Net worth breakdown with chart.\n"
-            "/expenses - Expense pie chart (all time or by month).\n"
-            "/calcExpenses - Budget status using the 50/30/20 rule.\n"
-            "/balance - Current account balances.\n"
-            "/savings - Savings pot: set aside, withdrawn, and net. Log <code>Income [Acct] [Amt] Savings</code> to record a withdrawal.\n\n"
-            "<b>Quick-log shortcuts:</b>\n"
-            "/ql - List your shortcuts.\n"
-            "/ql <name> - Fire a shortcut.\n"
-            "/ql add <name> <tx> - Save a new shortcut.\n"
-            "/ql delete <name> - Remove a shortcut.\n\n"
-            "<b>Guided entry:</b>\n"
-            "/log - Step-by-step transaction entry with buttons.\n\n"
-            "<b>Recurring transactions:</b>\n"
-            "/recurring - List recurring transactions.\n"
-            "/recurring add <name> <day> <tx> - Auto-log monthly on a given day.\n"
-            "/recurring delete <name> - Remove a recurring transaction.\n\n"
-            "<b>Goals:</b>\n"
-            "/goals - Show all savings goals with progress.\n"
-            "/setgoal <name> <amount> - Create or update a goal.\n"
-            "/addtogoal <name> <amount> - Add savings to a goal.\n\n"
-            "<b>Utilities:</b>\n"
-            "/calc [expression] - Calculator (e.g. <code>/calc 5 * 2</code>).\n"
-            "/start - Check your authorization.\n"
-            "/help - This message.\n\n"
-            "<i>Tip: Transactions show a preview and anomaly warnings before logging.</i>"
-        )
-        await update.message.reply_text(help_text)
+        lines = [
+            "<b>Finance Logging:</b>",
+            "<code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>",
+            "Example: <code>Expense Cash 15.50 Needs Lunch</code>",
+            "",
+            "<b>Transfers:</b>",
+            "<code>Transfer [From] to [To] [Amount]</code>",
+            "Example: <code>Transfer Digital to Cash 1500</code>",
+            "",
+            "<b>Commands:</b>",
+        ]
+        for name, description in COMMANDS:
+            lines.append(f"/{html.escape(name)} — {html.escape(description)}")
+        lines.append("")
+        lines.append("<i>Tip: Transactions show a preview and anomaly warnings before logging.</i>")
+        lines.append("<i>To record a savings withdrawal: <code>Income [Acct] [Amt] Savings</code></i>")
+        await update.message.reply_text("\n".join(lines))
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
@@ -2087,6 +2087,13 @@ class FinanceBot:
     async def start(self):
         await self.application.initialize()
         await self.application.start()
+        # Register Telegram command menu (the / list users see when they type /)
+        try:
+            await self.application.bot.set_my_commands(
+                [BotCommand(name, desc) for name, desc in COMMANDS]
+            )
+        except Exception as e:
+            logger.warning(f"Could not register command menu: {e}")
         # Schedule recurring transaction check daily at 9:00am
         if self.application.job_queue:
             self.application.job_queue.run_daily(
