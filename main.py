@@ -2,7 +2,6 @@ import logging
 import signal
 import sys
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler,
@@ -30,21 +29,16 @@ logger = logging.getLogger(__name__)
 # ==================================================================================================
 # SHARED CONFIGURATION & RESOURCES
 # ==================================================================================================
-# Define the scope for Google Sheets API
-GOOGLE_SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# (oauth2client removed — gspread.service_account_from_dict uses google-auth directly)
 
 def get_google_client(creds_json):
-    """
-    Authenticates with Google and returns the gspread client.
-    This can be shared between multiple bots if they both need sheet access.
-    """
+    """Authenticate with Google and return a gspread client (google-auth, no oauth2client)."""
     if not creds_json:
         logger.warning("Credentials JSON is empty. Cannot create Google client.")
         return None
     try:
         creds_dict = json.loads(creds_json)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, GOOGLE_SCOPES)
-        return gspread.authorize(creds)
+        return gspread.service_account_from_dict(creds_dict)
     except Exception as e:
         logger.error(f"Failed to authorize Google Client: {e}")
         return None

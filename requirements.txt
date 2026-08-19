@@ -1,5 +1,4 @@
 python-telegram-bot~=22.6
 gspread~=6.2
-oauth2client~=4.1
 matplotlib~=3.10
 tzdata~=2026.1
