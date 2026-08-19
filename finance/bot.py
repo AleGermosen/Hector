@@ -34,7 +34,7 @@ COMMANDS = [
     ("ytd",           "Year-to-date totals and savings rate"),
     ("net",           "Net worth breakdown with chart"),
     ("expenses",      "Expense pie chart (all time or by month)"),
-    ("calcExpenses",  "Budget status using the 50/30/20 rule"),
+    ("calcexpenses",  "Budget status using the 50/30/20 rule"),
     ("balance",       "Current account balances"),
     ("savings",       "Savings pot: set aside, withdrawn, and net"),
     ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
@@ -311,7 +311,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('calc', self.calculator))
         self.application.add_handler(CommandHandler('expenses', self.generate_expenses_chart))
         self.application.add_handler(CommandHandler('net', self.calculate_net_worth))
-        self.application.add_handler(CommandHandler('calcExpenses', self.calc_expenses_budget))
+        self.application.add_handler(CommandHandler('calcexpenses', self.calc_expenses_budget))
         self.application.add_handler(CommandHandler('summary', self.summary_cmd))
         self.application.add_handler(CommandHandler('top', self.top_expenses_cmd))
         self.application.add_handler(CommandHandler('ytd', self.ytd_cmd))
@@ -1233,7 +1233,7 @@ class FinanceBot:
             target_month = self._parse_month(arg)
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/calcExpenses january</code>."
+                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/calcexpenses january</code>."
                 )
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")

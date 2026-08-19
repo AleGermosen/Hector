@@ -103,7 +103,9 @@ async def main():
 
 async def _poll_forever(bot):
     """Keep a bot polling; the task ends only when the updater stops."""
-    await bot.application.updater.wait_for_stop()
+    while bot.application.updater.running:
+        await asyncio.sleep(5)
+    logger.warning(f"{type(bot).__name__} updater stopped unexpectedly.")
 
 
 if __name__ == '__main__':
