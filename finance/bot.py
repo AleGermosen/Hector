@@ -1,3 +1,4 @@
+import ast as _ast
 import logging
 import asyncio
 import re
@@ -186,6 +187,43 @@ async def load_transactions(sheet, month=None, year=None) -> list:
 
 CONFIRM_TRANSACTION = 0
 LOG_TYPE, LOG_ACCOUNT, LOG_AMOUNT, LOG_CATEGORY, LOG_DESCRIPTION = range(1, 6)
+
+# ── Safe math evaluator (replaces eval) ──────────────────────────────────────
+
+_CALC_MAX_LEN = 200
+_CALC_MAX_EXP = 100
+
+_ALLOWED_NODES = (
+    _ast.Expression, _ast.BinOp, _ast.UnaryOp,
+    _ast.Add, _ast.Sub, _ast.Mult, _ast.Div, _ast.Mod,
+    _ast.Pow, _ast.FloorDiv, _ast.USub, _ast.UAdd,
+    _ast.Constant,
+)
+
+
+def _safe_eval(expr: str) -> float:
+    """Evaluate a math expression safely without eval()."""
+    if len(expr) > _CALC_MAX_LEN:
+        raise ValueError(f"Expression too long (max {_CALC_MAX_LEN} chars).")
+    try:
+        tree = _ast.parse(expr.strip(), mode='eval')
+    except SyntaxError as e:
+        raise ValueError(f"Syntax error: {e}") from e
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(f"Disallowed expression type: {type(node).__name__}")
+    # Guard against huge exponents like 9**9**9 by rejecting nested Pow on the right
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Pow):
+            right = node.right
+            if isinstance(right, _ast.Constant) and right.value > _CALC_MAX_EXP:
+                raise ValueError(f"Exponent too large (max {_CALC_MAX_EXP}).")
+            if isinstance(right, _ast.BinOp) and isinstance(right.op, _ast.Pow):
+                raise ValueError("Chained exponentiation is not allowed.")
+    result = eval(compile(tree, '<calc>', 'eval'))  # noqa: S307 — AST-whitelisted
+    if not isinstance(result, (int, float)):
+        raise ValueError("Result is not a number.")
+    return float(result)
 
 
 class FinanceBot:
@@ -634,9 +672,9 @@ class FinanceBot:
                 [date, "Income", to_acc, amount, "Transfer", f"Transfer from {from_acc} {desc}".strip()]
             ]
             preview = (
-                f"💸 *Transfer*\n"
-                f"  From: *{from_acc}*\n"
-                f"  To: *{to_acc}*\n"
+                f"💸 <b>Transfer</b>\n"
+                f"  From: <b>{from_acc}</b>\n"
+                f"  To: <b>{to_acc}</b>\n"
                 f"  Amount: *${amount:,.2f}*"
             )
             if desc:
@@ -649,30 +687,30 @@ class FinanceBot:
         if len(parts) < 3:
             return None, None, (
                 "❌ Too few arguments.\n\n"
-                "Format: `[Income/Expense] [Account] [Amount] [Category] [Description]`\n"
-                "Example: `Expense Cash 50 Needs Groceries`"
+                "Format: <code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>\n"
+                "Example: <code>Expense Cash 50 Needs Groceries</code>"
             )
 
         trans_type = parts[0].capitalize()
         if trans_type not in ('Income', 'Expense'):
             return None, None, (
-                f"❌ Unknown type `{parts[0]}`. Must be `Income` or `Expense`.\n\n"
-                "Example: `Expense Cash 50 Needs Groceries`"
+                f"❌ Unknown type <code>{parts[0]}</code>. Must be <code>Income</code> or <code>Expense</code>.\n\n"
+                "Example: <code>Expense Cash 50 Needs Groceries</code>"
             )
 
         if len(parts) < 3:
-            return None, None, "❌ Missing amount. Format: `[Income/Expense] [Account] [Amount] [Category]`"
+            return None, None, "❌ Missing amount. Format: <code>[Income/Expense] [Account] [Amount] [Category]</code>"
 
         amount = _parse_amount_strict(parts[2])
         if amount is None:
             return None, None, (
-                f"❌ `{parts[2]}` is not a valid amount. Use a number like `50`, `1,500`, or `$50`."
+                f"❌ <code>{parts[2]}</code> is not a valid amount. Use a number like <code>50</code>, <code>1,500</code>, or <code>$50</code>."
             )
 
         if len(parts) < 4:
             return None, None, (
-                "❌ Missing category. Allowed: `Needs`, `Wants`, `Savings`, `Debt`\n"
-                "Example: `Expense Cash 50 Needs Groceries`"
+                "❌ Missing category. Allowed: <code>Needs</code>, <code>Wants</code>, <code>Savings</code>, <code>Debt</code>\n"
+                "Example: <code>Expense Cash 50 Needs Groceries</code>"
             )
 
         account = parts[1].capitalize()
@@ -686,8 +724,8 @@ class FinanceBot:
                 category = matched
             else:
                 return None, None, (
-                    f"❌ Category `{category}` is not allowed.\n"
-                    f"Allowed: `{', '.join(allowed)}`"
+                    f"❌ Category <code>{category}</code> is not allowed.\n"
+                    f"Allowed: <code>{', '.join(allowed)}</code>"
                 )
 
         date = now().strftime("%Y-%m-%d %H:%M:%S")
@@ -701,10 +739,10 @@ class FinanceBot:
         # Build preview
         emoji = "💰" if trans_type == 'Income' else "💸"
         preview = (
-            f"{emoji} *{trans_type}*\n"
-            f"  Account:  *{account}*\n"
+            f"{emoji} <b>{trans_type}</b>\n"
+            f"  Account:  <b>{account}</b>\n"
             f"  Amount:   *${amount:,.2f}*\n"
-            f"  Category: *{category}*"
+            f"  Category: <b>{category}</b>"
         )
         if description:
             preview += f"\n  Note:     {description}"
@@ -714,14 +752,10 @@ class FinanceBot:
         return rows, preview, None
 
     def _insert_row(self, sheet, row_data):
-        existing_data = sheet.col_values(1)
-        next_row_index = len(existing_data) + 1
-        sheet.insert_row(row_data, index=next_row_index, value_input_option='USER_ENTERED')
+        sheet.append_row(row_data, table_range='A1')
 
     def _insert_rows(self, sheet, rows_data):
-        existing_data = sheet.col_values(1)
-        next_row_index = len(existing_data) + 1
-        sheet.insert_rows(rows_data, row=next_row_index, value_input_option='USER_ENTERED')
+        sheet.append_rows(rows_data, table_range='A1')
 
     async def _show_preview(self, message, context, rows, preview, sheet):
         """Shared helper: shows the transaction preview with confirm/cancel buttons.
@@ -738,7 +772,7 @@ class FinanceBot:
                 avg = self._get_category_average(records, row[4])
                 amount = float(row[3])
                 if avg > 0 and amount >= avg * 3:
-                    warning = f"\n\n⚠️ *Heads up:* This is unusually high for *{row[4]}* (your avg is `${avg:,.2f}`)."
+                    warning = f"\n\n⚠️ <b>Heads up:</b> This is unusually high for <b>{row[4]}</b> (your avg is <code>${avg:,.2f}</code>)."
             except Exception:
                 pass
 
@@ -748,8 +782,7 @@ class FinanceBot:
         ]
         await message.reply_text(
             f"{preview}{warning}\n\nLog this transaction?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CONFIRM_TRANSACTION
 
@@ -761,14 +794,13 @@ class FinanceBot:
         if not sheet:
             await update.message.reply_text(
                 "❌ You are not authorized. Ask the admin to link your account.\n"
-                f"Your Telegram ID is: `{user_id}`",
-                parse_mode='Markdown'
+                f"Your Telegram ID is: <code>{user_id}</code>"
             )
             return ConversationHandler.END
 
         rows, preview, error = self._parse_transaction_text(update.message.text, user_id)
         if error:
-            await update.message.reply_text(error, parse_mode='Markdown')
+            await update.message.reply_text(error)
             return ConversationHandler.END
 
         return await self._show_preview(update.message, context, rows, preview, sheet)
@@ -812,15 +844,15 @@ class FinanceBot:
             account_balance = balances.get(account, 0.0)
 
             confirmation = (
-                f"✅ *Logged successfully!*\n\n"
-                f"{emoji} *{trans_type}*\n"
-                f"  Account:  *{account}*\n"
+                f"✅ <b>Logged successfully!</b>\n\n"
+                f"{emoji} <b>{trans_type}</b>\n"
+                f"  Account:  <b>{account}</b>\n"
                 f"  Amount:   *${float(amount):,.2f}*\n"
-                f"  Category: *{category}*"
+                f"  Category: <b>{category}</b>"
             )
             if description:
                 confirmation += f"\n  Note:     {description}"
-            confirmation += f"\n\n  📊 *{account} balance*: `${account_balance:,.2f}`"
+            confirmation += f"\n\n  📊 <b>{account} balance</b>: <code>${account_balance:,.2f}</code>"
 
             # Budget alert — only for expenses in a tracked category
             budget_pct = {'Needs': 0.5, 'Wants': 0.3, 'Debt': 0.2}
@@ -834,13 +866,13 @@ class FinanceBot:
                         if spent > budget_limit:
                             over = spent - budget_limit
                             confirmation += (
-                                f"\n\n⚠️ *Budget alert:* You've exceeded your "
-                                f"*{category}* budget by `${over:,.2f}` this month."
+                                f"\n\n⚠️ <b>Budget alert:</b> You've exceeded your "
+                                f"<b>{category}</b> budget by <code>${over:,.2f}</code> this month."
                             )
                 except Exception:
                     pass
 
-            await query.edit_message_text(confirmation, parse_mode='Markdown')
+            await query.edit_message_text(confirmation)
 
         except Exception as e:
             logger.error(f"Sheet write error: {e}")
@@ -856,22 +888,20 @@ class FinanceBot:
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
         if str(user_id) in self.user_mapping:
-            await update.message.reply_text(f"Welcome back! Your ID is `{user_id}` and your sheet is linked.",
-                                            parse_mode='Markdown')
+            await update.message.reply_text(f"Welcome back! Your ID is <code>{user_id}</code> and your sheet is linked.")
         else:
-            await update.message.reply_text(f"Hello! You are not authorized. Send your ID to the admin: `{user_id}`",
-                                            parse_mode='Markdown')
+            await update.message.reply_text(f"Hello! You are not authorized. Send your ID to the admin: <code>{user_id}</code>")
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
         help_text = (
-            "*Finance Logging:*\n"
-            "`[Income/Expense] [Account] [Amount] [Category] [Description]`\n"
-            "Example: `Expense Cash 15.50 Needs Lunch`\n\n"
-            "*Transfers:*\n"
-            "`Transfer [From] to [To] [Amount]`\n"
-            "Example: `Transfer Digital to Cash 1500`\n\n"
-            "*Analysis:*\n"
+            "<b>Finance Logging:</b>\n"
+            "<code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>\n"
+            "Example: <code>Expense Cash 15.50 Needs Lunch</code>\n\n"
+            "<b>Transfers:</b>\n"
+            "<code>Transfer [From] to [To] [Amount]</code>\n"
+            "Example: <code>Transfer Digital to Cash 1500</code>\n\n"
+            "<b>Analysis:</b>\n"
             "/dash - Full snapshot: balances, budget, savings rate.\n"
             "/summary - This month's income, expenses, net & trends.\n"
             "/summary [month] - Summary for a specific month.\n"
@@ -882,29 +912,29 @@ class FinanceBot:
             "/expenses - Expense pie chart (all time or by month).\n"
             "/calcExpenses - Budget status using the 50/30/20 rule.\n"
             "/balance - Current account balances.\n"
-            "/savings - Savings pot: set aside, withdrawn, and net. Log `Income [Acct] [Amt] Savings` to record a withdrawal.\n\n"
-            "*Quick-log shortcuts:*\n"
+            "/savings - Savings pot: set aside, withdrawn, and net. Log <code>Income [Acct] [Amt] Savings</code> to record a withdrawal.\n\n"
+            "<b>Quick-log shortcuts:</b>\n"
             "/ql - List your shortcuts.\n"
             "/ql <name> - Fire a shortcut.\n"
             "/ql add <name> <tx> - Save a new shortcut.\n"
             "/ql delete <name> - Remove a shortcut.\n\n"
-            "*Guided entry:*\n"
+            "<b>Guided entry:</b>\n"
             "/log - Step-by-step transaction entry with buttons.\n\n"
-            "*Recurring transactions:*\n"
+            "<b>Recurring transactions:</b>\n"
             "/recurring - List recurring transactions.\n"
             "/recurring add <name> <day> <tx> - Auto-log monthly on a given day.\n"
             "/recurring delete <name> - Remove a recurring transaction.\n\n"
-            "*Goals:*\n"
+            "<b>Goals:</b>\n"
             "/goals - Show all savings goals with progress.\n"
             "/setgoal <name> <amount> - Create or update a goal.\n"
             "/addtogoal <name> <amount> - Add savings to a goal.\n\n"
-            "*Utilities:*\n"
-            "/calc [expression] - Calculator (e.g. `/calc 5 * 2`).\n"
+            "<b>Utilities:</b>\n"
+            "/calc [expression] - Calculator (e.g. <code>/calc 5 * 2</code>).\n"
             "/start - Check your authorization.\n"
             "/help - This message.\n\n"
-            "_Tip: Transactions show a preview and anomaly warnings before logging._"
+            "<i>Tip: Transactions show a preview and anomaly warnings before logging.</i>"
         )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        await update.message.reply_text(help_text)
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
@@ -923,22 +953,27 @@ class FinanceBot:
                 await update.message.reply_text("No transactions found to calculate balance.")
                 return
 
-            response = "💰 *Your Account Balances:*\n"
+            response = "💰 <b>Your Account Balances:</b>\n"
             for acc, bal in balances.items():
                 indicator = "🟢" if bal >= 0 else "🔴"
-                response += f"{indicator} {acc}: `${bal:,.2f}`\n"
+                response += f"{indicator} {acc}: <code>${bal:,.2f}</code>\n"
 
-            await update.message.reply_text(response, parse_mode='Markdown')
+            await update.message.reply_text(response)
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         expression = " ".join(context.args)
+        if not expression:
+            await update.message.reply_text("Usage: /calc <expression>  e.g. <code>/calc 5 * 2</code>")
+            return
         try:
-            result = eval(expression, {"__builtins__": {}}, {})
-            await update.message.reply_text(f"🔢 Result: `{result}`", parse_mode='Markdown')
-        except:
-            await update.message.reply_text("❌ Invalid calculation.")
+            result = _safe_eval(expression)
+            await update.message.reply_text(f"🔢 Result: <code>{result:g}</code>")
+        except (ValueError, ZeroDivisionError) as e:
+            await update.message.reply_text(f"❌ {html.escape(str(e))}")
+        except Exception:
+            await update.message.reply_text("❌ Invalid expression.")
 
     async def generate_expenses_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
@@ -957,8 +992,7 @@ class FinanceBot:
             target_month = self._parse_month(arg)
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ `{arg}` is not a valid month. Try `/expenses january` or `/expenses jan`.",
-                    parse_mode='Markdown'
+                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/expenses january</code> or <code>/expenses jan</code>."
                 )
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
@@ -990,19 +1024,19 @@ class FinanceBot:
                 buf.seek(0)
                 plt.close(fig)
 
-            breakdown_text = f"📊 *{chart_title}:*\n"
+            breakdown_text = f"📊 <b>{html.escape(chart_title)}:</b>\n"
             for label, size in zip(labels, sizes):
                 pct = (size / total_categorized) * 100 if total_categorized > 0 else 0
-                breakdown_text += f"  • *{label}*: ${size:,.2f} ({pct:.1f}%)\n"
+                breakdown_text += f"  • <b>{html.escape(label)}</b>: ${size:,.2f} ({pct:.1f}%)\n"
             if summary['other_expenses'] > 0:
-                breakdown_text += f"  • *Other*: ${summary['other_expenses']:,.2f}\n"
-            breakdown_text += f"\n*Total Expenses*: ${summary['total_expenses']:,.2f}"
-            breakdown_text += f"\n*Net Worth*: `${summary['net_worth']:,.2f}`"
+                breakdown_text += f"  • <b>Other</b>: ${summary['other_expenses']:,.2f}\n"
+            breakdown_text += f"\n<b>Total Expenses</b>: ${summary['total_expenses']:,.2f}"
+            breakdown_text += f"\n<b>Net Worth</b>: <code>${summary['net_worth']:,.2f}</code>"
 
             if buf:
-                await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+                await update.message.reply_photo(photo=buf, caption=breakdown_text)
             else:
-                await update.message.reply_text(breakdown_text, parse_mode='Markdown')
+                await update.message.reply_text(breakdown_text)
 
         except Exception as e:
             logger.error(f"Chart Error: {e}")
@@ -1025,8 +1059,7 @@ class FinanceBot:
             target_month = self._parse_month(arg)
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ `{arg}` is not a valid month. Try `/net january`.",
-                    parse_mode='Markdown'
+                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/net january</code>."
                 )
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
@@ -1067,20 +1100,20 @@ class FinanceBot:
 
             net_emoji = "📈" if net_worth >= 0 else "📉"
             breakdown_text = (
-                f"💰 *Net Worth Summary {title_suffix}:*\n\n"
-                f"  • *Total Income*:   `${total_income:,.2f}`\n"
-                f"  • *Total Expenses*: `${total_expenses:,.2f}`"
+                f"💰 <b>Net Worth Summary {html.escape(title_suffix)}:</b>\n\n"
+                f"  • <b>Total Income</b>:   <code>${total_income:,.2f}</code>\n"
+                f"  • <b>Total Expenses</b>: <code>${total_expenses:,.2f}</code>"
             )
             if total_income > 0:
                 breakdown_text += f" ({expense_pct:.1f}% of income)"
-            breakdown_text += f"\n\n{net_emoji} *Net Worth*: `${net_worth:,.2f}`"
+            breakdown_text += f"\n\n{net_emoji} <b>Net Worth</b>: <code>${net_worth:,.2f}</code>"
             if total_income > 0:
                 breakdown_text += f" ({net_pct:.1f}% of income remaining)"
 
             if chart_generated:
-                await update.message.reply_photo(photo=buf, caption=breakdown_text, parse_mode='Markdown')
+                await update.message.reply_photo(photo=buf, caption=breakdown_text)
             else:
-                await update.message.reply_text(breakdown_text, parse_mode='Markdown')
+                await update.message.reply_text(breakdown_text)
 
         except Exception as e:
             logger.error(f"Net Worth Error: {e}")
@@ -1103,8 +1136,7 @@ class FinanceBot:
             target_month = self._parse_month(arg)
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ `{arg}` is not a valid month. Try `/calcExpenses january`.",
-                    parse_mode='Markdown'
+                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/calcExpenses january</code>."
                 )
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
@@ -1136,23 +1168,23 @@ class FinanceBot:
 
             def status_line(actual, budget):
                 if actual > budget:
-                    return f"⚠️ *OVER* by `${actual - budget:,.2f}`"
+                    return f"⚠️ <b>OVER</b> by <code>${actual - budget:,.2f}</code>"
                 else:
-                    return f"✅ `${budget - actual:,.2f}` remaining"
+                    return f"✅ <code>${budget - actual:,.2f}</code> remaining"
 
             response = (
-                f"💰 *Budget Status {title_suffix}*\n"
-                f"  Income: `${total_income:,.2f}`\n\n"
-                f"🏠 *Needs (50%)* — budget `${budget_needs:,.2f}`\n"
-                f"  Spent: `${actual_needs:,.2f}` → {status_line(actual_needs, budget_needs)}\n\n"
-                f"🎉 *Wants (30%)* — budget `${budget_wants:,.2f}`\n"
-                f"  Spent: `${actual_wants:,.2f}` → {status_line(actual_wants, budget_wants)}\n\n"
-                f"📈 *Savings/Debt (20%)* — budget `${budget_savings:,.2f}`\n"
-                f"  Spent: `${actual_savings:,.2f}` → {status_line(actual_savings, budget_savings)}\n\n"
-                f"*Net Worth*: `${summary['net_worth']:,.2f}`"
+                f"💰 <b>Budget Status {html.escape(title_suffix)}</b>\n"
+                f"  Income: <code>${total_income:,.2f}</code>\n\n"
+                f"🏠 <b>Needs (50%)</b> — budget <code>${budget_needs:,.2f}</code>\n"
+                f"  Spent: <code>${actual_needs:,.2f}</code> → {status_line(actual_needs, budget_needs)}\n\n"
+                f"🎉 <b>Wants (30%)</b> — budget <code>${budget_wants:,.2f}</code>\n"
+                f"  Spent: <code>${actual_wants:,.2f}</code> → {status_line(actual_wants, budget_wants)}\n\n"
+                f"📈 <b>Savings/Debt (20%)</b> — budget <code>${budget_savings:,.2f}</code>\n"
+                f"  Spent: <code>${actual_savings:,.2f}</code> → {status_line(actual_savings, budget_savings)}\n\n"
+                f"<b>Net Worth</b>: <code>${summary['net_worth']:,.2f}</code>"
             )
 
-            await update.message.reply_text(response, parse_mode='Markdown')
+            await update.message.reply_text(response)
 
         except Exception as e:
             logger.error(f"Calc Expenses Error: {e}")
@@ -1169,9 +1201,8 @@ class FinanceBot:
         month, year, period_desc = parse_period(context.args)
         if period_desc is None:
             await update.message.reply_text(
-                f"❌ Could not understand period: `{' '.join(context.args)}`\n"
-                "Try: `this month`, `last month`, `january`, `january 2025`, `2025`.",
-                parse_mode='Markdown'
+                f"❌ Could not understand period: <code>{' '.join(context.args)}</code>\n"
+                "Try: <code>this month</code>, <code>last month</code>, <code>january</code>, <code>january 2025</code>, <code>2025</code>."
             )
             return
 
@@ -1185,18 +1216,18 @@ class FinanceBot:
             pot = set_aside - withdrew
 
             response = (
-                f"📈 *Savings — {period_desc}:*\n\n"
-                f"  Set aside: `${set_aside:,.2f}`\n"
-                f"  Withdrew:  `${withdrew:,.2f}`\n"
-                f"  Pot:       `${pot:,.2f}`\n\n"
-                f"_To record taking money back out: `Income [Account] [Amount] Savings`_"
+                f"📈 <b>Savings — {html.escape(period_desc)}:</b>\n\n"
+                f"  Set aside: <code>${set_aside:,.2f}</code>\n"
+                f"  Withdrew:  <code>${withdrew:,.2f}</code>\n"
+                f"  Pot:       <code>${pot:,.2f}</code>\n\n"
+                f"_To record taking money back out: <code>Income [Account] [Amount] Savings</code>_"
             )
-            await update.message.reply_text(response, parse_mode='Markdown')
+            await update.message.reply_text(response)
 
         except Exception as e:
             logger.error(f"Savings error: {e}")
             corr_id = uuid.uuid4().hex[:8]
-            await update.message.reply_text(f"❌ Something went wrong. Ref: `{corr_id}`", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Something went wrong. Ref: <code>{corr_id}</code>")
 
     async def _error_handler(self, update, context: ContextTypes.DEFAULT_TYPE):
         """Global error handler: logs, notifies admin, replies to user with correlation id."""
@@ -1211,16 +1242,14 @@ class FinanceBot:
                 ))
                 await context.bot.send_message(
                     chat_id=admin_chat_id,
-                    text=f"[{corr_id}]\n```\n{tb[-3000:]}\n```",
-                    parse_mode='Markdown'
+                    text=f"[{corr_id}]\n```\n{tb[-3000:]}\n```"
                 )
             except Exception:
                 pass
 
         if update and update.effective_message:
             await update.effective_message.reply_text(
-                f"😔 Something went wrong. Reference: `{corr_id}`",
-                parse_mode='Markdown'
+                f"😔 Something went wrong. Reference: <code>{corr_id}</code>"
             )
 
     async def summary_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1238,8 +1267,7 @@ class FinanceBot:
             target_month = self._parse_month(context.args[0])
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ `{context.args[0]}` is not a valid month. Try `/summary august`.",
-                    parse_mode='Markdown'
+                    f"❌ <code>{context.args[0]}</code> is not a valid month. Try <code>/summary august</code>."
                 )
                 return
         else:
@@ -1270,41 +1298,41 @@ class FinanceBot:
             net_emoji = "📈" if curr['net_worth'] >= 0 else "📉"
             savings_emoji = "✅" if curr['savings_rate'] >= 20 else ("⚠️" if curr['savings_rate'] >= 10 else "🔴")
 
-            lines = [f"📋 *Summary — {month_name}*\n"]
+            lines = [f"📋 <b>Summary — {html.escape(month_name)}</b>\n"]
 
-            lines.append(f"💰 *Income*: `${curr['total_income']:,.2f}`{trend(curr['total_income'], prev['total_income'])}")
-            lines.append(f"💸 *Expenses*: `${curr['total_expenses']:,.2f}`{trend(curr['total_expenses'], prev['total_expenses'])}")
-            lines.append(f"{net_emoji} *Net*: `${curr['net_worth']:,.2f}`")
-            lines.append(f"{savings_emoji} *Savings rate*: `{curr['savings_rate']}%`{trend(curr['savings_rate'], prev['savings_rate'])}\n")
+            lines.append(f"💰 <b>Income</b>: <code>${curr['total_income']:,.2f}</code>{trend(curr['total_income'], prev['total_income'])}")
+            lines.append(f"💸 <b>Expenses</b>: <code>${curr['total_expenses']:,.2f}</code>{trend(curr['total_expenses'], prev['total_expenses'])}")
+            lines.append(f"{net_emoji} <b>Net</b>: <code>${curr['net_worth']:,.2f}</code>")
+            lines.append(f"{savings_emoji} <b>Savings rate</b>: <code>{curr['savings_rate']}%</code>{trend(curr['savings_rate'], prev['savings_rate'])}\n")
 
-            lines.append("*By category:*")
+            lines.append("<b>By category:</b>")
             for cat, amount in curr['categories'].items():
                 if amount > 0 or prev['categories'].get(cat, 0) > 0:
                     t = trend(amount, prev['categories'].get(cat, 0))
-                    lines.append(f"  • {cat}: `${amount:,.2f}`{t}")
+                    lines.append(f"  • {cat}: <code>${amount:,.2f}</code>{t}")
             if curr['other_expenses'] > 0:
-                lines.append(f"  • Other: `${curr['other_expenses']:,.2f}`")
+                lines.append(f"  • Other: <code>${curr['other_expenses']:,.2f}</code>")
 
             # Spend forecast — only for current month
             if target_month == now_dt.month and target_year == now_dt.year and curr['total_expenses'] > 0:
                 days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
                 projected = self._spend_forecast(curr['total_expenses'], now_dt.day, days_in_month)
-                lines.append(f"\n📉 *Forecast*: `${projected:,.2f}` by month-end")
+                lines.append(f"\n📉 <b>Forecast</b>: <code>${projected:,.2f}</code> by month-end")
 
             # Goals snapshot — show if any goals exist
             try:
                 ws = await loop.run_in_executor(None, lambda: self._get_goals_sheet(user_id))
                 goals = await loop.run_in_executor(None, lambda: self._load_goals(ws))
                 if goals:
-                    lines.append("\n🎯 *Goals:*")
+                    lines.append("\n🎯 <b>Goals:</b>")
                     for goal in goals:
                         pct = min((goal['saved'] / goal['target']) * 100, 100) if goal['target'] > 0 else 0
                         bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
-                        lines.append(f"  {goal['name']}: `{bar}` {pct:.1f}%")
+                        lines.append(f"  {goal['name']}: <code>{bar}</code> {pct:.1f}%")
             except Exception:
                 pass
 
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+            await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
             logger.error(f"Summary error: {e}")
@@ -1325,8 +1353,7 @@ class FinanceBot:
             target_month = self._parse_month(context.args[0])
             if not target_month:
                 await update.message.reply_text(
-                    f"❌ `{context.args[0]}` is not a valid month. Try `/top august`.",
-                    parse_mode='Markdown'
+                    f"❌ <code>{context.args[0]}</code> is not a valid month. Try <code>/top august</code>."
                 )
                 return
         else:
@@ -1343,13 +1370,13 @@ class FinanceBot:
                 await update.message.reply_text(f"No expenses found for {month_name}.")
                 return
 
-            lines = [f"🏆 *Top Expenses — {month_name}*\n"]
+            lines = [f"🏆 <b>Top Expenses — {html.escape(month_name)}</b>\n"]
             medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
             for i, (amount, category, description, date) in enumerate(top):
                 label = description if description else category
-                lines.append(f"{medals[i]} `${amount:,.2f}` — {label} _({category})_")
+                lines.append(f"{medals[i]} <code>${amount:,.2f}</code> — {label} _({category})_")
 
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+            await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
             logger.error(f"Top expenses error: {e}")
@@ -1378,21 +1405,21 @@ class FinanceBot:
             savings_emoji = "✅" if s['savings_rate'] >= 20 else ("⚠️" if s['savings_rate'] >= 10 else "🔴")
 
             lines = [
-                f"📅 *Year-to-Date — {year}*\n",
-                f"💰 *Total Income*:   `${s['total_income']:,.2f}`",
-                f"💸 *Total Expenses*: `${s['total_expenses']:,.2f}`",
-                f"{net_emoji} *Net Worth*:      `${s['net_worth']:,.2f}`",
-                f"{savings_emoji} *Savings Rate*:   `{s['savings_rate']}%`\n",
-                "*Expenses by category:*",
+                f"📅 <b>Year-to-Date — {year}</b>\n",
+                f"💰 <b>Total Income</b>:   <code>${s['total_income']:,.2f}</code>",
+                f"💸 <b>Total Expenses</b>: <code>${s['total_expenses']:,.2f}</code>",
+                f"{net_emoji} <b>Net Worth</b>:      <code>${s['net_worth']:,.2f}</code>",
+                f"{savings_emoji} <b>Savings Rate</b>:   <code>{s['savings_rate']}%</code>\n",
+                "<b>Expenses by category:</b>",
             ]
             for cat, amount in s['categories'].items():
                 if amount > 0:
                     pct = (amount / s['total_expenses'] * 100) if s['total_expenses'] > 0 else 0
-                    lines.append(f"  • {cat}: `${amount:,.2f}` ({pct:.1f}%)")
+                    lines.append(f"  • {cat}: <code>${amount:,.2f}</code> ({pct:.1f}%)")
             if s['other_expenses'] > 0:
-                lines.append(f"  • Other: `${s['other_expenses']:,.2f}`")
+                lines.append(f"  • Other: <code>${s['other_expenses']:,.2f}</code>")
 
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+            await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
             logger.error(f"YTD error: {e}")
@@ -1423,32 +1450,32 @@ class FinanceBot:
             score_emoji = "🟢" if score >= 8 else ("🟡" if score >= 5 else "🔴")
 
             lines = [
-                f"📊 *Dashboard — {month_name}*\n",
-                f"{score_emoji} *Health Score: {score}/{max_score}* `{score_bar}`\n"
+                f"📊 <b>Dashboard — {html.escape(month_name)}</b>\n",
+                f"{score_emoji} <b>Health Score: {score}/{max_score}</b> <code>{score_bar}</code>\n"
             ]
 
             # Account balances
-            lines.append("*💳 Balances:*")
+            lines.append("<b>💳 Balances:</b>")
             if balances:
                 for acc, bal in balances.items():
                     indicator = "🟢" if bal >= 0 else "🔴"
-                    lines.append(f"  {indicator} {acc}: `${bal:,.2f}`")
+                    lines.append(f"  {indicator} {acc}: <code>${bal:,.2f}</code>")
             else:
                 lines.append("  No transactions yet.")
 
             # This month budget
-            lines.append("\n*📆 This Month:*")
+            lines.append("\n<b>📆 This Month:</b>")
             if s['total_income'] > 0 or s['total_expenses'] > 0:
                 net_emoji = "📈" if s['net_worth'] >= 0 else "📉"
                 savings_emoji = "✅" if s['savings_rate'] >= 20 else ("⚠️" if s['savings_rate'] >= 10 else "🔴")
-                lines.append(f"  💰 Income:   `${s['total_income']:,.2f}`")
-                lines.append(f"  💸 Expenses: `${s['total_expenses']:,.2f}`")
-                lines.append(f"  {net_emoji} Net:      `${s['net_worth']:,.2f}`")
-                lines.append(f"  {savings_emoji} Savings rate: `{s['savings_rate']}%`")
+                lines.append(f"  💰 Income:   <code>${s['total_income']:,.2f}</code>")
+                lines.append(f"  💸 Expenses: <code>${s['total_expenses']:,.2f}</code>")
+                lines.append(f"  {net_emoji} Net:      <code>${s['net_worth']:,.2f}</code>")
+                lines.append(f"  {savings_emoji} Savings rate: <code>{s['savings_rate']}%</code>")
 
                 # Budget status (50/30/20)
                 if s['total_income'] > 0:
-                    lines.append("\n*📏 50/30/20 Budget:*")
+                    lines.append("\n<b>📏 50/30/20 Budget:</b>")
                     _txs = parse_rows(records, now_dt.month, now_dt.year)
                     _exp_sav = sum(t.amount for t in _txs if t.type == 'Expense' and t.category.lower() == 'savings')
                     _inc_sav = sum(t.amount for t in _txs if t.type == 'Income' and t.category.lower() == 'savings')
@@ -1460,9 +1487,9 @@ class FinanceBot:
                     }
                     for label, (actual, budget) in budgets.items():
                         if actual > budget:
-                            status = f"⚠️ over by `${actual - budget:,.2f}`"
+                            status = f"⚠️ over by <code>${actual - budget:,.2f}</code>"
                         else:
-                            status = f"✅ `${budget - actual:,.2f}` left"
+                            status = f"✅ <code>${budget - actual:,.2f}</code> left"
                         lines.append(f"  {label}: {status}")
 
                 # Spend forecast
@@ -1470,14 +1497,14 @@ class FinanceBot:
                 day = now_dt.day
                 if day > 0 and s['total_expenses'] > 0:
                     projected = self._spend_forecast(s['total_expenses'], day, days_in_month)
-                    lines.append(f"\n*📉 Forecast:*")
-                    lines.append(f"  At current pace: `${projected:,.2f}` by month-end")
+                    lines.append(f"\n<b>📉 Forecast:</b>")
+                    lines.append(f"  At current pace: <code>${projected:,.2f}</code> by month-end")
                     if s['total_income'] > 0 and projected > s['total_income']:
-                        lines.append(f"  ⚠️ Projected to exceed income by `${projected - s['total_income']:,.2f}`")
+                        lines.append(f"  ⚠️ Projected to exceed income by <code>${projected - s['total_income']:,.2f}</code>")
             else:
                 lines.append("  No transactions this month yet.")
 
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+            await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
             logger.error(f"Dashboard error: {e}")
@@ -1511,14 +1538,13 @@ class FinanceBot:
             if not shortcuts:
                 await update.message.reply_text(
                     "No shortcuts saved yet.\n"
-                    "Add one: `/ql add lunch Expense Cash 15 Wants Lunch`",
-                    parse_mode='Markdown'
+                    "Add one: <code>/ql add lunch Expense Cash 15 Wants Lunch</code>"
                 )
                 return
             lines = ["*⚡ Your shortcuts:*\n"]
             for name, tx in sorted(shortcuts.items()):
-                lines.append(f"  `/ql {name}` → `{tx}`")
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+                lines.append(f"  <code>/ql {name}</code> → <code>{tx}</code>")
+            await update.message.reply_text("\n".join(lines))
             return
 
         subcommand = args[0].lower()
@@ -1527,9 +1553,8 @@ class FinanceBot:
         if subcommand == 'add':
             if len(args) < 3:
                 await update.message.reply_text(
-                    "Usage: `/ql add <name> <transaction>`\n"
-                    "Example: `/ql add lunch Expense Cash 15 Wants Lunch`",
-                    parse_mode='Markdown'
+                    "Usage: <code>/ql add <name> <transaction></code>\n"
+                    "Example: <code>/ql add lunch Expense Cash 15 Wants Lunch</code>"
                 )
                 return
             name = args[1].lower()
@@ -1538,8 +1563,7 @@ class FinanceBot:
             rows, _, error = self._parse_transaction_text(transaction, user_id)
             if error:
                 await update.message.reply_text(
-                    f"❌ That transaction doesn't parse correctly:\n{error}",
-                    parse_mode='Markdown'
+                    f"❌ That transaction doesn't parse correctly:\n{error}"
                 )
                 return
             loop = asyncio.get_running_loop()
@@ -1550,19 +1574,18 @@ class FinanceBot:
             for i, r in enumerate(records, start=2):
                 if r.get('Name', '').strip().lower() == name:
                     await loop.run_in_executor(None, lambda: ws.update(f'B{i}', [[transaction]]))
-                    await update.message.reply_text(f"✅ Updated shortcut `{name}`.", parse_mode='Markdown')
+                    await update.message.reply_text(f"✅ Updated shortcut <code>{name}</code>.")
                     return
             await loop.run_in_executor(None, lambda: ws.append_row([name, transaction]))
             await update.message.reply_text(
-                f"✅ Shortcut saved: `/ql {name}` → `{transaction}`",
-                parse_mode='Markdown'
+                f"✅ Shortcut saved: <code>/ql {name}</code> → <code>{transaction}</code>"
             )
             return
 
         # Delete shortcut
         if subcommand == 'delete':
             if len(args) < 2:
-                await update.message.reply_text("Usage: `/ql delete <name>`", parse_mode='Markdown')
+                await update.message.reply_text("Usage: <code>/ql delete <name></code>")
                 return
             name = args[1].lower()
             loop = asyncio.get_running_loop()
@@ -1571,9 +1594,9 @@ class FinanceBot:
             for i, r in enumerate(records, start=2):
                 if r.get('Name', '').strip().lower() == name:
                     await loop.run_in_executor(None, lambda: ws.delete_rows(i))
-                    await update.message.reply_text(f"✅ Deleted shortcut `{name}`.", parse_mode='Markdown')
+                    await update.message.reply_text(f"✅ Deleted shortcut <code>{name}</code>.")
                     return
-            await update.message.reply_text(f"❌ No shortcut named `{name}`.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ No shortcut named <code>{name}</code>.")
             return
 
         # Fire a shortcut by name
@@ -1584,13 +1607,12 @@ class FinanceBot:
         transaction = shortcuts.get(name)
         if not transaction:
             await update.message.reply_text(
-                f"❌ No shortcut named `{name}`. Use `/ql` to see your list.",
-                parse_mode='Markdown'
+                f"❌ No shortcut named <code>{name}</code>. Use <code>/ql</code> to see your list."
             )
             return
         rows, preview, error = self._parse_transaction_text(transaction, user_id)
         if error:
-            await update.message.reply_text(f"❌ Shortcut is broken: {error}", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Shortcut is broken: {error}")
             return
         await self._show_preview(update.message, context, rows, preview, sheet)
 
@@ -1635,12 +1657,11 @@ class FinanceBot:
         if known_accounts:
             buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
             await query.edit_message_text(
-                f"*{trans_type}* — Which account?",
-                reply_markup=InlineKeyboardMarkup(buttons),
-                parse_mode='Markdown'
+                f"<b>{trans_type}</b> — Which account?",
+                reply_markup=InlineKeyboardMarkup(buttons)
             )
         else:
-            await query.edit_message_text(f"*{trans_type}* — Type the account name:", parse_mode='Markdown')
+            await query.edit_message_text(f"<b>{trans_type}</b> — Type the account name:")
         return LOG_ACCOUNT
 
     async def log_account_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1648,13 +1669,13 @@ class FinanceBot:
         await query.answer()
         account = query.data.replace('acc_', '')
         context.user_data['log_entry']['account'] = account
-        await query.edit_message_text(f"Account: *{account}*\n\nEnter the amount:", parse_mode='Markdown')
+        await query.edit_message_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
         return LOG_AMOUNT
 
     async def log_account(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         account = update.message.text.strip().capitalize()
         context.user_data['log_entry']['account'] = account
-        await update.message.reply_text(f"Account: *{account}*\n\nEnter the amount:", parse_mode='Markdown')
+        await update.message.reply_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
         return LOG_AMOUNT
 
     async def log_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1662,7 +1683,7 @@ class FinanceBot:
         try:
             amount = float(text.replace(',', '').replace('$', ''))
         except ValueError:
-            await update.message.reply_text(f"❌ `{text}` is not a valid amount. Try again.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ <code>{text}</code> is not a valid amount. Try again.")
             return LOG_AMOUNT
 
         context.user_data['log_entry']['amount'] = amount
@@ -1683,8 +1704,7 @@ class FinanceBot:
             ]
             await update.message.reply_text(
                 f"Amount: *${amount:,.2f}*\n\nSelect a category:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return LOG_CATEGORY
         else:
@@ -1699,17 +1719,15 @@ class FinanceBot:
         context.user_data['log_entry']['category'] = category
         amount = context.user_data['log_entry']['amount']
         await query.edit_message_text(
-            f"Category: *{category}*\n\nAdd a description? (or tap Skip)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]]),
-            parse_mode='Markdown'
+            f"Category: <b>{category}</b>\n\nAdd a description? (or tap Skip)",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
 
     async def _log_ask_description(self, message, context, amount):
         await message.reply_text(
             f"Amount: *${amount:,.2f}*\n\nAdd a description? (or tap Skip)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]]),
-            parse_mode='Markdown'
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
 
@@ -1743,9 +1761,9 @@ class FinanceBot:
         rows, preview, error = self._parse_transaction_text(tx, user_id)
         if error:
             if hasattr(message_or_query, 'edit_message_text'):
-                await message_or_query.edit_message_text(f"❌ {error}", parse_mode='Markdown')
+                await message_or_query.edit_message_text(f"❌ {error}")
             else:
-                await message_or_query.reply_text(f"❌ {error}", parse_mode='Markdown')
+                await message_or_query.reply_text(f"❌ {error}")
             return ConversationHandler.END
 
         sheet = self.get_user_sheet(user_id)
@@ -1777,17 +1795,16 @@ class FinanceBot:
             if not items:
                 await update.message.reply_text(
                     "No recurring transactions set up.\n\n"
-                    "Add one: `/recurring add rent 1 Expense Cash 1500 Needs Rent`\n"
-                    "_(This would log rent on the 1st of each month)_",
-                    parse_mode='Markdown'
+                    "Add one: <code>/recurring add rent 1 Expense Cash 1500 Needs Rent</code>\n"
+                    "<i>(This would log rent on the 1st of each month)</i>"
                 )
                 return
-            lines = ["🔄 *Recurring Transactions:*\n"]
+            lines = ["🔄 <b>Recurring Transactions:</b>\n"]
             for item in items:
                 day_str = f"Day {item['day']}"
                 last = f"last: {item['last_logged']}" if item['last_logged'] else "never logged"
-                lines.append(f"  • *{item['name']}* — {day_str} — `{item['transaction']}` _({last})_")
-            await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+                lines.append(f"  • <b>{item['name']}</b> — {day_str} — <code>{item['transaction']}</code> _({last})_")
+            await update.message.reply_text("\n".join(lines))
             return
 
         subcommand = args[0].lower()
@@ -1795,9 +1812,8 @@ class FinanceBot:
         if subcommand == 'add':
             if len(args) < 4:
                 await update.message.reply_text(
-                    "Usage: `/recurring add <name> <day> <transaction>`\n"
-                    "Example: `/recurring add rent 1 Expense Cash 1500 Needs Rent`",
-                    parse_mode='Markdown'
+                    "Usage: <code>/recurring add <name> <day> <transaction></code>\n"
+                    "Example: <code>/recurring add rent 1 Expense Cash 1500 Needs Rent</code>"
                 )
                 return
             name = args[1]
@@ -1811,19 +1827,18 @@ class FinanceBot:
             transaction = " ".join(args[3:])
             _, _, error = self._parse_transaction_text(transaction, user_id)
             if error:
-                await update.message.reply_text(f"❌ Transaction doesn't parse:\n{error}", parse_mode='Markdown')
+                await update.message.reply_text(f"❌ Transaction doesn't parse:\n{error}")
                 return
             ws = await loop.run_in_executor(None, lambda: self._get_recurring_sheet(user_id))
             await loop.run_in_executor(None, lambda: ws.append_row([name, transaction, day, ""]))
             await update.message.reply_text(
-                f"✅ Added: *{name}* will auto-log on day *{day}* of each month.",
-                parse_mode='Markdown'
+                f"✅ Added: <b>{name}</b> will auto-log on day <b>{day}</b> of each month."
             )
             return
 
         if subcommand == 'delete':
             if len(args) < 2:
-                await update.message.reply_text("Usage: `/recurring delete <name>`", parse_mode='Markdown')
+                await update.message.reply_text("Usage: <code>/recurring delete <name></code>")
                 return
             name = args[1].lower()
             ws = await loop.run_in_executor(None, lambda: self._get_recurring_sheet(user_id))
@@ -1831,9 +1846,9 @@ class FinanceBot:
             for item in items:
                 if item['name'].lower() == name:
                     await loop.run_in_executor(None, lambda: ws.delete_rows(item['row_index']))
-                    await update.message.reply_text(f"✅ Deleted recurring: *{item['name']}*.", parse_mode='Markdown')
+                    await update.message.reply_text(f"✅ Deleted recurring: <b>{item['name']}</b>.")
                     return
-            await update.message.reply_text(f"❌ No recurring transaction named `{args[1]}`.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ No recurring transaction named <code>{args[1]}</code>.")
 
     async def _recurring_job(self, context):
         """Runs daily at 9am: logs any recurring transactions due today for all users."""
@@ -1881,10 +1896,9 @@ class FinanceBot:
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=(
-                            f"🔄 *Recurring logged:* _{item['name']}_\n"
-                            f"  `{item['transaction']}`"
-                        ),
-                        parse_mode='Markdown'
+                            f"🔄 <b>Recurring logged:</b> <i>{item['name']}</i>\n"
+                            f"  <code>{item['transaction']}</code>"
+                        )
                     )
                     logger.info(f"Logged recurring '{item['name']}' for user {user_id}")
 
@@ -1901,16 +1915,15 @@ class FinanceBot:
             return
         if len(context.args) < 2:
             await update.message.reply_text(
-                "Usage: `/setgoal <name> <amount>`\n"
-                "Example: `/setgoal vacation 2000`",
-                parse_mode='Markdown'
+                "Usage: <code>/setgoal <name> <amount></code>\n"
+                "Example: <code>/setgoal vacation 2000</code>"
             )
             return
         name = context.args[0]
         try:
             target = float(context.args[1].replace(',', ''))
         except ValueError:
-            await update.message.reply_text(f"❌ `{context.args[1]}` is not a valid amount.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ <code>{context.args[1]}</code> is not a valid amount.")
             return
 
         loop = asyncio.get_running_loop()
@@ -1921,16 +1934,14 @@ class FinanceBot:
             if goal['name'].lower() == name.lower():
                 await loop.run_in_executor(None, lambda: ws.update_cell(goal['row_index'], 2, target))
                 await update.message.reply_text(
-                    f"✅ Updated goal *{goal['name']}*: target set to `${target:,.2f}`.",
-                    parse_mode='Markdown'
+                    f"✅ Updated goal <b>{goal['name']}</b>: target set to <code>${target:,.2f}</code>."
                 )
                 return
 
         await loop.run_in_executor(None, lambda: ws.append_row([name, target, 0]))
         await update.message.reply_text(
-            f"🎯 Goal created: *{name}* — `${target:,.2f}`\n"
-            f"Use `/addtogoal {name} <amount>` to track your progress.",
-            parse_mode='Markdown'
+            f"🎯 Goal created: <b>{name}</b> — <code>${target:,.2f}</code>\n"
+            f"Use <code>/addtogoal {name} <amount></code> to track your progress."
         )
 
     async def addtogoal_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1941,16 +1952,15 @@ class FinanceBot:
             return
         if len(context.args) < 2:
             await update.message.reply_text(
-                "Usage: `/addtogoal <name> <amount>`\n"
-                "Example: `/addtogoal vacation 200`",
-                parse_mode='Markdown'
+                "Usage: <code>/addtogoal <name> <amount></code>\n"
+                "Example: <code>/addtogoal vacation 200</code>"
             )
             return
         name = context.args[0]
         try:
             amount = float(context.args[1].replace(',', ''))
         except ValueError:
-            await update.message.reply_text(f"❌ `{context.args[1]}` is not a valid amount.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ <code>{context.args[1]}</code> is not a valid amount.")
             return
 
         loop = asyncio.get_running_loop()
@@ -1963,18 +1973,16 @@ class FinanceBot:
                 await loop.run_in_executor(None, lambda: ws.update_cell(goal['row_index'], 3, new_saved))
                 pct = min((new_saved / goal['target']) * 100, 100) if goal['target'] > 0 else 0
                 bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
-                done = "🎉 *Goal reached!*" if new_saved >= goal['target'] else ""
+                done = "🎉 <b>Goal reached!</b>" if new_saved >= goal['target'] else ""
                 await update.message.reply_text(
-                    f"✅ Added `${amount:,.2f}` to *{goal['name']}*\n"
-                    f"`{bar}` {pct:.1f}%\n"
-                    f"Saved: `${new_saved:,.2f}` / `${goal['target']:,.2f}`\n{done}",
-                    parse_mode='Markdown'
+                    f"✅ Added <code>${amount:,.2f}</code> to <b>{goal['name']}</b>\n"
+                    f"<code>{bar}</code> {pct:.1f}%\n"
+                    f"Saved: <code>${new_saved:,.2f}<code> / </code>${goal['target']:,.2f}</code>\n{done}"
                 )
                 return
 
         await update.message.reply_text(
-            f"❌ No goal named `{name}`. Create one with `/setgoal {name} <amount>`.",
-            parse_mode='Markdown'
+            f"❌ No goal named <code>{name}</code>. Create one with <code>/setgoal {name} <amount></code>."
         )
 
     async def goals_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1990,23 +1998,22 @@ class FinanceBot:
 
         if not goals:
             await update.message.reply_text(
-                "No goals yet. Create one: `/setgoal vacation 2000`",
-                parse_mode='Markdown'
+                "No goals yet. Create one: <code>/setgoal vacation 2000</code>"
             )
             return
 
-        lines = ["🎯 *Your Goals:*\n"]
+        lines = ["🎯 <b>Your Goals:</b>\n"]
         for goal in goals:
             pct = min((goal['saved'] / goal['target']) * 100, 100) if goal['target'] > 0 else 0
             bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
             remaining = max(goal['target'] - goal['saved'], 0)
-            status = "✅ Done!" if goal['saved'] >= goal['target'] else f"`${remaining:,.2f}` to go"
+            status = "✅ Done!" if goal['saved'] >= goal['target'] else f"<code>${remaining:,.2f}</code> to go"
             lines.append(
-                f"*{goal['name']}*\n"
-                f"`{bar}` {pct:.1f}%\n"
-                f"  `${goal['saved']:,.2f}` / `${goal['target']:,.2f}` — {status}\n"
+                f"<b>{goal['name']}</b>\n"
+                f"<code>{bar}</code> {pct:.1f}%\n"
+                f"  <code>${goal['saved']:,.2f}<code> / </code>${goal['target']:,.2f}</code> — {status}\n"
             )
-        await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+        await update.message.reply_text("\n".join(lines))
 
     async def start(self):
         await self.application.initialize()

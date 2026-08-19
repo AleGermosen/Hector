@@ -1,6 +1,7 @@
+import html
 import pytest
 from datetime import datetime as real_datetime
-from finance.bot import FinanceBot, parse_rows, parse_period, _parse_amount, _parse_amount_strict, now, Transaction
+from finance.bot import FinanceBot, parse_rows, parse_period, _parse_amount, _parse_amount_strict, now, Transaction, _safe_eval
 
 # Minimal bot instance with no real credentials — enough to test pure methods
 bot = FinanceBot.__new__(FinanceBot)
@@ -551,3 +552,118 @@ def test_phase1_checks_column_b_not_column_a():
     txs = parse_rows(records)
     assert len(txs) == 1
     assert txs[0].category == "Needs"
+
+
+# ── Phase 2 tests ─────────────────────────────────────────────────────────────
+
+# Task 1: append-only writes ──────────────────────────────────────────────────
+
+class FakeSheet:
+    def __init__(self):
+        self.appended_rows = []
+        self.get_all_values_calls = 0
+
+    def append_row(self, row, table_range=None):
+        self.appended_rows.append(row)
+
+    def append_rows(self, rows, table_range=None):
+        self.appended_rows.extend(rows)
+
+    def get_all_values(self):
+        self.get_all_values_calls += 1
+        return []
+
+def test_insert_row_uses_append_not_index(monkeypatch):
+    """_insert_row must call append_row, not compute a row index."""
+    sheet = FakeSheet()
+    monkeypatch.setattr(sheet, 'append_row', sheet.append_row)
+    row = ["2024-01-01", "Expense", "Cash", "50", "Needs", "Groceries"]
+    bot._insert_row(sheet, row)
+    assert sheet.appended_rows == [row]
+
+def test_insert_rows_uses_append_not_index(monkeypatch):
+    """_insert_rows must call append_rows, not compute row indices."""
+    sheet = FakeSheet()
+    rows = [
+        ["2024-01-01", "Expense", "Cash", "50", "Needs", "Groceries"],
+        ["2024-01-01", "Income", "Cash", "50", "Savings", "Transfer"],
+    ]
+    bot._insert_rows(sheet, rows)
+    assert sheet.appended_rows == rows
+
+def test_insert_row_passes_table_range():
+    """append_row must be called with table_range='A1' to always append."""
+    calls = []
+    sheet = FakeSheet()
+
+    def recording_append_row(row, table_range=None):
+        calls.append(table_range)
+    sheet.append_row = recording_append_row
+
+    bot._insert_row(sheet, ["2024-01-01", "Expense", "Cash", "10", "Needs", ""])
+    assert calls == ["A1"]
+
+# Task 2: safe AST evaluator ─────────────────────────────────────────────────
+
+def test_safe_eval_basic_arithmetic():
+    assert _safe_eval("2 + 3") == 5
+    assert _safe_eval("10 - 4") == 6
+    assert _safe_eval("3 * 7") == 21
+    assert _safe_eval("20 / 4") == 5.0
+
+def test_safe_eval_exponentiation():
+    assert _safe_eval("2 ** 10") == 1024
+
+def test_safe_eval_nested_parens():
+    assert _safe_eval("(2 + 3) * 4") == 20
+
+def test_safe_eval_float():
+    assert abs(_safe_eval("1.5 * 2") - 3.0) < 1e-9
+
+def test_safe_eval_rejects_huge_exponent():
+    with pytest.raises((ValueError, OverflowError)):
+        _safe_eval("9 ** 9 ** 9")
+
+def test_safe_eval_rejects_dunder_access():
+    with pytest.raises((ValueError, SyntaxError)):
+        _safe_eval("().__class__")
+
+def test_safe_eval_rejects_import():
+    with pytest.raises((ValueError, SyntaxError)):
+        _safe_eval("__import__('os')")
+
+def test_safe_eval_division_by_zero_raises():
+    with pytest.raises(ZeroDivisionError):
+        _safe_eval("1 / 0")
+
+def test_safe_eval_rejects_too_long_expression():
+    with pytest.raises(ValueError, match="too long"):
+        _safe_eval("1 + " * 55 + "1")  # 4*55+1 = 221 chars, over the 200-char limit
+
+def test_safe_eval_rejects_string_literal():
+    with pytest.raises(ValueError):
+        _safe_eval("'hello'")
+
+# Task 3: HTML escaping ───────────────────────────────────────────────────────
+
+def test_html_escape_in_transfer_preview():
+    """Account names with HTML special chars must be escaped in preview text."""
+    account = "<Savings & Loan>"
+    escaped = html.escape(account)
+    preview = f"💸 <b>Transfer</b>\n  From: <b>{escaped}</b>\n  To: <b>Cash</b>"
+    assert "<Savings & Loan>" not in preview
+    assert "&lt;Savings &amp; Loan&gt;" in preview
+
+def test_html_escape_in_confirmation():
+    """Category names with special chars must be escaped in confirmation."""
+    category = "Needs & Wants <high>"
+    escaped = html.escape(category)
+    msg = f"<b>Category:</b> {escaped}"
+    assert "<high>" not in msg
+    assert "&lt;high&gt;" in msg
+
+def test_html_escape_ampersand():
+    assert html.escape("Fish & Chips") == "Fish &amp; Chips"
+
+def test_html_escape_angle_brackets():
+    assert html.escape("<script>") == "&lt;script&gt;"
