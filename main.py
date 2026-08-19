@@ -1,4 +1,6 @@
 import logging
+import signal
+import sys
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -1422,18 +1424,51 @@ async def main():
         logger.error("No bots to run. Exiting.")
         return
 
+    stop_signal = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop_signal.set)
+        except NotImplementedError:
+            pass  # Windows / restricted environments
+
     for bot in bots:
         await bot.start()
 
-    stop_signal = asyncio.Event()
+    # Run each bot as a supervised task; exit non-zero if any dies unexpectedly
+    tasks = {asyncio.create_task(stop_signal.wait(), name="stop")}
+    for bot in bots:
+        tasks.add(asyncio.create_task(_poll_forever(bot), name=type(bot).__name__))
+
     try:
-        await stop_signal.wait()
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            name = task.get_name()
+            if name != "stop":
+                exc = task.exception()
+                logger.critical(f"Bot task '{name}' exited unexpectedly: {exc}")
+                stop_signal.set()  # bring down the other bots too
     except asyncio.CancelledError:
         pass
     finally:
+        for task in tasks:
+            task.cancel()
         logger.info("Shutting down bots...")
         for bot in bots:
-            await bot.stop()
+            try:
+                await bot.stop()
+            except Exception as e:
+                logger.error(f"Error stopping bot: {e}")
+
+    # Exit non-zero if any bot died unexpectedly (not triggered by the stop signal)
+    if any(t.get_name() != "stop" and t.done() and not t.cancelled() for t in tasks):
+        sys.exit(1)
+
+
+async def _poll_forever(bot):
+    """Keep a bot polling; the task ends only when the updater stops."""
+    await bot.application.updater.wait_for_stop()
+
 
 if __name__ == '__main__':
     try:
