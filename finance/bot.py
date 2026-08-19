@@ -15,6 +15,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -83,22 +84,24 @@ def _parse_date(date_str) -> Optional[datetime]:
     return None
 
 
-def _parse_amount(amount_str) -> float:
+def _parse_amount(amount_str) -> Decimal:
     if not amount_str:
-        return 0.0
+        return Decimal(0)
     try:
-        return float(str(amount_str).replace('$', '').replace(',', '').strip())
-    except ValueError:
-        return 0.0
+        cleaned = str(amount_str).replace('$', '').replace(',', '').strip()
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return Decimal(0)
 
 
-def _parse_amount_strict(amount_str) -> Optional[float]:
+def _parse_amount_strict(amount_str) -> Optional[Decimal]:
     """Like _parse_amount but returns None on failure (safe for write paths)."""
     if not amount_str:
         return None
     try:
-        return float(str(amount_str).replace('$', '').replace(',', '').strip())
-    except ValueError:
+        cleaned = str(amount_str).replace('$', '').replace(',', '').strip()
+        return Decimal(cleaned)
+    except InvalidOperation:
         return None
 
 
@@ -164,7 +167,7 @@ class Transaction:
     date: Optional[datetime]
     type: str        # "Income" | "Expense"
     account: str
-    amount: float
+    amount: Decimal
     category: str
     description: str
 
@@ -431,13 +434,7 @@ class FinanceBot:
         return None
 
     def _parse_amount_robust(self, amount_str):
-        if not amount_str:
-            return 0.0
-        try:
-            clean_str = str(amount_str).replace('$', '').replace(',', '').strip()
-            return float(clean_str)
-        except ValueError:
-            return 0.0
+        return _parse_amount(amount_str)
 
     def _get_data_summary(self, records, target_month=None, target_year=None, year_only=False):
         """
@@ -449,10 +446,10 @@ class FinanceBot:
         """
         target_year = target_year or now().year
         summary = {
-            'total_income': 0.0,
-            'total_expenses': 0.0,
-            'categories': {'Needs': 0.0, 'Wants': 0.0, 'Debt': 0.0},
-            'other_expenses': 0.0
+            'total_income': Decimal(0),
+            'total_expenses': Decimal(0),
+            'categories': {'Needs': Decimal(0), 'Wants': Decimal(0), 'Debt': Decimal(0)},
+            'other_expenses': Decimal(0),
         }
 
         for row in records:
@@ -553,11 +550,11 @@ class FinanceBot:
                     continue
                 key = (row_date.year, row_date.month)
                 amount = _parse_amount(row[3])
-                monthly_totals[key] = monthly_totals.get(key, 0.0) + amount
+                monthly_totals[key] = monthly_totals.get(key, Decimal(0)) + amount
             except Exception:
                 continue
         if not monthly_totals:
-            return 0.0
+            return Decimal(0)
         return sum(monthly_totals.values()) / len(monthly_totals)
 
     def _get_known_accounts(self, records):
@@ -730,7 +727,7 @@ class FinanceBot:
                     continue
                 account = row[2].strip().capitalize()
                 amount = _parse_amount(row[3])
-                balances[account] = balances.get(account, 0.0) + (amount if trans_type == 'Income' else -amount)
+                balances[account] = balances.get(account, Decimal(0)) + (amount if trans_type == 'Income' else -amount)
             except Exception:
                 continue
         return balances
@@ -751,16 +748,17 @@ class FinanceBot:
             amount_str = transfer_match.group(3)
             desc = transfer_match.group(4) or ""
             amount = _parse_amount(amount_str)
+            amount_s = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
             date = now().strftime("%Y-%m-%d %H:%M:%S")
             rows = [
-                [date, "Expense", from_acc, amount, "Transfer", f"Transfer to {to_acc} {desc}".strip()],
-                [date, "Income", to_acc, amount, "Transfer", f"Transfer from {from_acc} {desc}".strip()]
+                [date, "Expense", from_acc, amount_s, "Transfer", f"Transfer to {to_acc} {desc}".strip()],
+                [date, "Income", to_acc, amount_s, "Transfer", f"Transfer from {from_acc} {desc}".strip()]
             ]
             preview = (
                 f"💸 <b>Transfer</b>\n"
                 f"  From: <b>{from_acc}</b>\n"
                 f"  To: <b>{to_acc}</b>\n"
-                f"  Amount: *${amount:,.2f}*"
+                f"  Amount: <b>${amount:,.2f}</b>"
             )
             if desc:
                 preview += f"\n  Note: {desc}"
@@ -814,11 +812,12 @@ class FinanceBot:
                 )
 
         date = now().strftime("%Y-%m-%d %H:%M:%S")
-        rows = [[date, trans_type, account, amount, category, description]]
+        amount_str = str(amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        rows = [[date, trans_type, account, amount_str, category, description]]
 
         # Savings auto-transfer
         if trans_type == 'Expense' and category.lower() == 'savings':
-            rows.append([date, "Income", "Account", amount, "Savings",
+            rows.append([date, "Income", "Account", amount_str, "Savings",
                          f"Savings from {account} {description}".strip()])
 
         # Build preview
@@ -826,7 +825,7 @@ class FinanceBot:
         preview = (
             f"{emoji} <b>{trans_type}</b>\n"
             f"  Account:  <b>{account}</b>\n"
-            f"  Amount:   *${amount:,.2f}*\n"
+            f"  Amount:   <b>${amount:,.2f}</b>\n"
             f"  Category: <b>{category}</b>"
         )
         if description:
@@ -870,7 +869,7 @@ class FinanceBot:
                 loop = asyncio.get_running_loop()
                 records = await self._get_all_values(sheet, user_id)
                 avg = self._get_category_average(records, row[4])
-                amount = float(row[3])
+                amount = _parse_amount(row[3])
                 if avg > 0 and amount >= avg * 3:
                     warning = f"\n\n⚠️ <b>Heads up:</b> This is unusually high for <b>{row[4]}</b> (your avg is <code>${avg:,.2f}</code>)."
             except Exception:
@@ -1088,7 +1087,7 @@ class FinanceBot:
             buf = None
             if sizes:
                 fig, ax = plt.subplots()
-                ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+                ax.pie([float(s) for s in sizes], labels=labels, autopct='%1.1f%%', startangle=90)
                 ax.axis('equal')
                 plt.title(chart_title)
                 buf = io.BytesIO()
@@ -1160,7 +1159,7 @@ class FinanceBot:
 
             if total_income > 0 and net_worth >= 0:
                 fig, ax = plt.subplots()
-                ax.pie([total_expenses, net_worth], labels=['Expenses', 'Net Worth'],
+                ax.pie([float(total_expenses), float(net_worth)], labels=['Expenses', 'Net Worth'],
                        autopct='%1.1f%%', startangle=90, colors=['#ff9999', '#66b3ff'])
                 ax.axis('equal')
                 plt.title(f'Net Worth Breakdown {title_suffix}')
@@ -1752,10 +1751,9 @@ class FinanceBot:
 
     async def log_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
-        try:
-            amount = float(text.replace(',', '').replace('$', ''))
-        except ValueError:
-            await update.message.reply_text(f"❌ <code>{text}</code> is not a valid amount. Try again.")
+        amount = _parse_amount_strict(text)
+        if amount is None:
+            await update.message.reply_text(f"❌ <code>{html.escape(text)}</code> is not a valid amount. Try again.")
             return LOG_AMOUNT
 
         context.user_data['log_entry']['amount'] = amount
@@ -1798,7 +1796,7 @@ class FinanceBot:
 
     async def _log_ask_description(self, message, context, amount):
         await message.reply_text(
-            f"Amount: *${amount:,.2f}*\n\nAdd a description? (or tap Skip)",
+            f"Amount: <b>${amount:,.2f}</b>\n\nAdd a description? (or tap Skip)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
@@ -1989,10 +1987,9 @@ class FinanceBot:
             )
             return
         name = context.args[0]
-        try:
-            target = float(context.args[1].replace(',', ''))
-        except ValueError:
-            await update.message.reply_text(f"❌ <code>{context.args[1]}</code> is not a valid amount.")
+        target = _parse_amount_strict(context.args[1])
+        if target is None:
+            await update.message.reply_text(f"❌ <code>{html.escape(context.args[1])}</code> is not a valid amount.")
             return
 
         loop = asyncio.get_running_loop()
@@ -2026,10 +2023,9 @@ class FinanceBot:
             )
             return
         name = context.args[0]
-        try:
-            amount = float(context.args[1].replace(',', ''))
-        except ValueError:
-            await update.message.reply_text(f"❌ <code>{context.args[1]}</code> is not a valid amount.")
+        amount = _parse_amount_strict(context.args[1])
+        if amount is None:
+            await update.message.reply_text(f"❌ <code>{html.escape(context.args[1])}</code> is not a valid amount.")
             return
 
         loop = asyncio.get_running_loop()

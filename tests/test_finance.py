@@ -1,5 +1,6 @@
 import html
 import pytest
+from decimal import Decimal
 from datetime import datetime as real_datetime
 from finance.bot import FinanceBot, parse_rows, parse_period, _parse_amount, _parse_amount_strict, now, Transaction, _safe_eval
 
@@ -55,21 +56,21 @@ def test_parse_date_invalid():
 # ── _parse_amount_robust ──────────────────────────────────────────────────────
 
 def test_parse_amount_plain():
-    assert bot._parse_amount_robust("150") == 150.0
+    assert bot._parse_amount_robust("150") == Decimal("150")
 
 def test_parse_amount_with_dollar_sign():
-    assert bot._parse_amount_robust("$1500.50") == 1500.50
+    assert bot._parse_amount_robust("$1500.50") == Decimal("1500.50")
 
 def test_parse_amount_with_comma():
-    assert bot._parse_amount_robust("1,500.99") == 1500.99
+    assert bot._parse_amount_robust("1,500.99") == Decimal("1500.99")
 
 def test_parse_amount_with_dollar_and_comma():
-    assert bot._parse_amount_robust("$1,200") == 1200.0
+    assert bot._parse_amount_robust("$1,200") == Decimal("1200")
 
 def test_parse_amount_invalid():
-    assert bot._parse_amount_robust("abc") == 0.0
-    assert bot._parse_amount_robust("") == 0.0
-    assert bot._parse_amount_robust(None) == 0.0
+    assert bot._parse_amount_robust("abc") == Decimal(0)
+    assert bot._parse_amount_robust("") == Decimal(0)
+    assert bot._parse_amount_robust(None) == Decimal(0)
 
 
 # ── _get_data_summary ─────────────────────────────────────────────────────────
@@ -128,7 +129,7 @@ def test_parse_expense():
     assert error is None
     assert rows[0][1] == "Expense"
     assert rows[0][2] == "Cash"
-    assert rows[0][3] == 50.0
+    assert Decimal(rows[0][3]) == Decimal("50.00")  # stored as str
     assert rows[0][4] == "Needs"
     assert rows[0][5] == "Groceries"
 
@@ -136,7 +137,7 @@ def test_parse_income():
     rows, preview, error = bot._parse_transaction_text("Income Digital 3000 Salary Monthly pay", "123")
     assert error is None
     assert rows[0][1] == "Income"
-    assert rows[0][3] == 3000.0
+    assert Decimal(rows[0][3]) == Decimal("3000.00")
 
 def test_parse_transfer():
     rows, preview, error = bot._parse_transaction_text("Transfer Digital to Cash 1500", "123")
@@ -144,7 +145,7 @@ def test_parse_transfer():
     assert len(rows) == 2
     assert rows[0][1] == "Expense"
     assert rows[1][1] == "Income"
-    assert rows[0][3] == 1500.0
+    assert Decimal(rows[0][3]) == Decimal("1500.00")
 
 def test_parse_savings_auto_transfer():
     rows, preview, error = bot._parse_transaction_text("Expense Cash 200 Savings Emergency", "123")
@@ -178,7 +179,7 @@ def test_parse_too_few_args():
 def test_savings_rate_calculated():
     summary = bot._get_data_summary(SAMPLE_RECORDS, target_month=8, target_year=2024)
     # income=3000, expenses=700 (Savings excluded), net=2300 → rate = 2300/3000 * 100 = 76.7%
-    assert summary['savings_rate'] == round((2300 / 3000) * 100, 1)
+    assert float(summary['savings_rate']) == pytest.approx(76.7, rel=1e-3)
 
 def test_savings_rate_zero_income():
     records = [["Date", "Type", "Account", "Amount", "Category"],
