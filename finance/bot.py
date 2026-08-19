@@ -1,4 +1,5 @@
 import ast as _ast
+import html
 import logging
 import asyncio
 import random
