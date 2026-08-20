@@ -20,6 +20,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import Defaults
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler,
     filters, ConversationHandler, CallbackQueryHandler
@@ -29,25 +31,29 @@ logger = logging.getLogger(__name__)
 
 # ── Command registry — single source of truth for menu and /help ──────────────
 COMMANDS = [
+    # Logging
+    ("log",           "Step-by-step guided transaction entry"),
+    ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
+    ("undo",          "Remove the most recently logged transaction"),
+    ("recent",        "Show last N transactions (default 10)"),
+    ("recurring",     "Manage recurring monthly transactions"),
+    # Reports
     ("dash",          "Full snapshot: balances, budget, savings rate"),
     ("summary",       "This month's income, expenses, net & trends"),
+    ("balance",       "Current account balances"),
     ("top",           "Top 5 expenses this month"),
     ("ytd",           "Year-to-date totals and savings rate"),
     ("net",           "Net worth breakdown with chart"),
     ("expenses",      "Expense pie chart (all time or by month)"),
     ("calcexpenses",  "Budget status using the 50/30/20 rule"),
-    ("balance",       "Current account balances"),
     ("savings",       "Savings pot: set aside, withdrawn, and net"),
-    ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
-    ("log",           "Step-by-step guided transaction entry"),
-    ("recurring",     "Manage recurring monthly transactions"),
+    ("trend",         "Income vs expenses line chart (default 6 months)"),
+    # Goals
     ("goals",         "Show all savings goals with progress"),
     ("setgoal",       "Create or update a savings goal"),
     ("addtogoal",     "Add savings to a goal"),
+    # Misc
     ("calc",          "Calculator — e.g. /calc 5 * 2"),
-    ("recent",        "Show last N transactions (default 10)"),
-    ("undo",          "Remove the most recently logged transaction"),
-    ("trend",         "Income vs expenses line chart (default 6 months)"),
     ("quiet",         "Toggle monthly summary push notifications"),
     ("start",         "Check your authorization"),
     ("help",          "Show this command list"),
@@ -301,7 +307,12 @@ class FinanceBot:
         self.strict_users = strict_users or []
         self._sheet_cache: dict[str, tuple[object, float]] = {}   # key → (sheet, expires_at)
         self._ledger_cache: dict[str, tuple[list, float]] = {}    # user_id → (rows, expires_at)
-        self.application = ApplicationBuilder().token(self.token).build()
+        self.application = (
+            ApplicationBuilder()
+            .token(self.token)
+            .defaults(Defaults(parse_mode=ParseMode.HTML))
+            .build()
+        )
         self._register_handlers()
         self.application.add_error_handler(self._error_handler)
 
@@ -1016,22 +1027,27 @@ class FinanceBot:
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
+        sections = {
+            "📝 Logging": ["log", "ql", "undo", "recent", "recurring"],
+            "📊 Reports": ["dash", "summary", "balance", "top", "ytd", "net", "expenses", "calcexpenses", "savings", "trend"],
+            "🎯 Goals": ["goals", "setgoal", "addtogoal"],
+            "⚙️ Misc": ["calc", "quiet", "start", "help", "cancel"],
+        }
+        cmd_map = {name: desc for name, desc in COMMANDS}
         lines = [
-            "<b>Finance Logging:</b>",
-            "<code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>",
-            "Example: <code>Expense Cash 15.50 Needs Lunch</code>",
+            "<b>Quick-log format:</b>",
+            "<code>Expense Cash 15.50 Needs Lunch</code>",
+            "<code>Income Digital 2000 Salary</code>",
+            "<code>Transfer Digital to Cash 1500</code>",
             "",
-            "<b>Transfers:</b>",
-            "<code>Transfer [From] to [To] [Amount]</code>",
-            "Example: <code>Transfer Digital to Cash 1500</code>",
-            "",
-            "<b>Commands:</b>",
         ]
-        for name, description in COMMANDS:
-            lines.append(f"/{html.escape(name)} — {html.escape(description)}")
-        lines.append("")
-        lines.append("<i>Tip: Transactions show a preview and anomaly warnings before logging.</i>")
-        lines.append("<i>To record a savings withdrawal: <code>Income [Acct] [Amt] Savings</code></i>")
+        for section, names in sections.items():
+            lines.append(f"<b>{section}</b>")
+            for name in names:
+                desc = cmd_map.get(name, "")
+                lines.append(f"  /{name} — {html.escape(desc)}")
+            lines.append("")
+        lines.append("<i>Every transaction shows a preview before being saved.</i>")
         await update.message.reply_text("\n".join(lines))
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1805,9 +1821,25 @@ class FinanceBot:
         trans_type = context.user_data['log_entry']['type']
 
         if trans_type == 'Transfer':
-            # For transfers, ask for destination account
             context.user_data['log_entry']['transfer_step'] = 'to_account'
-            await update.message.reply_text("Transfer to which account?")
+            # Offer known accounts as buttons, same as the FROM account step
+            user_id = update.message.from_user.id
+            sheet = self.get_user_sheet(user_id)
+            known_accounts = []
+            if sheet:
+                try:
+                    records = await self._get_all_values(sheet, user_id)
+                    known_accounts = self._get_known_accounts(records)
+                except Exception:
+                    pass
+            if known_accounts:
+                buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
+                await update.message.reply_text(
+                    "Transfer to which account?",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            else:
+                await update.message.reply_text("Transfer to which account?")
             return LOG_ACCOUNT
 
         if trans_type == 'Expense':
