@@ -226,6 +226,7 @@ async def load_transactions(sheet, month=None, year=None) -> list:
 
 CONFIRM_TRANSACTION = 0
 LOG_TYPE, LOG_ACCOUNT, LOG_AMOUNT, LOG_CATEGORY, LOG_DESCRIPTION = range(1, 6)
+QL_AMOUNT = 6
 
 # ── Safe math evaluator (replaces eval) ──────────────────────────────────────
 
@@ -359,6 +360,18 @@ class FinanceBot:
             allow_reentry=True
         )
         self.application.add_handler(log_conv)
+
+        # QL shortcut with variable amount (? placeholder)
+        ql_amount_conv = ConversationHandler(
+            entry_points=[CommandHandler('ql', self.quicklog_cmd)],
+            states={
+                QL_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.ql_amount_input)],
+                CONFIRM_TRANSACTION: [CallbackQueryHandler(self.confirm_transaction_callback)],
+            },
+            fallbacks=[CommandHandler('cancel', self.cancel_transaction)],
+            allow_reentry=True,
+        )
+        self.application.add_handler(ql_amount_conv)
 
         # Freetext confirmation flow for logging transactions
         conv_handler = ConversationHandler(
@@ -1655,7 +1668,7 @@ class FinanceBot:
                     "Add one: <code>/ql add lunch Expense Cash 15 Wants Lunch</code>"
                 )
                 return
-            lines = ["*⚡ Your shortcuts:*\n"]
+            lines = ["<b>⚡ Your shortcuts:</b>\n"]
             for name, tx in sorted(shortcuts.items()):
                 lines.append(f"  <code>/ql {name}</code> → <code>{tx}</code>")
             await update.message.reply_text("\n".join(lines))
@@ -1673,13 +1686,14 @@ class FinanceBot:
                 return
             name = args[1].lower()
             transaction = " ".join(args[2:])
-            # Validate the transaction parses correctly before saving
-            rows, _, error = self._parse_transaction_text(transaction, user_id)
-            if error:
-                await update.message.reply_text(
-                    f"❌ That transaction doesn't parse correctly:\n{error}"
-                )
-                return
+            # Validate — skip parse check if ? placeholder is present (amount unknown at save time)
+            if '?' not in transaction:
+                rows, _, error = self._parse_transaction_text(transaction, user_id)
+                if error:
+                    await update.message.reply_text(
+                        f"❌ That transaction doesn't parse correctly:\n{error}"
+                    )
+                    return
             loop = asyncio.get_running_loop()
             ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
             shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
@@ -1723,12 +1737,45 @@ class FinanceBot:
             await update.message.reply_text(
                 f"❌ No shortcut named <code>{name}</code>. Use <code>/ql</code> to see your list."
             )
-            return
+            return ConversationHandler.END
+
+        # If the template has a ? placeholder, ask for the amount
+        if '?' in transaction:
+            context.user_data['ql_template'] = transaction
+            context.user_data['ql_user_id'] = user_id
+            await update.message.reply_text(
+                f"⚡ <b>{name}</b> — enter the amount:"
+            )
+            return QL_AMOUNT
+
         rows, preview, error = self._parse_transaction_text(transaction, user_id)
         if error:
             await update.message.reply_text(f"❌ Shortcut is broken: {error}")
-            return
+            return ConversationHandler.END
         await self._show_preview(update.message, context, rows, preview, sheet)
+        return ConversationHandler.END
+
+    async def ql_amount_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receives the amount for a ? ql shortcut and shows the preview."""
+        text = update.message.text.strip()
+        amount = _parse_amount_strict(text)
+        if amount is None:
+            await update.message.reply_text(
+                f"❌ <code>{html.escape(text)}</code> is not a valid amount. Try again."
+            )
+            return QL_AMOUNT
+
+        template = context.user_data.get('ql_template', '')
+        user_id = context.user_data.get('ql_user_id', update.message.from_user.id)
+        transaction = template.replace('?', str(amount), 1)
+
+        sheet = self.get_user_sheet(user_id)
+        rows, preview, error = self._parse_transaction_text(transaction, user_id)
+        if error:
+            await update.message.reply_text(f"❌ {error}")
+            return ConversationHandler.END
+        await self._show_preview(update.message, context, rows, preview, sheet)
+        return CONFIRM_TRANSACTION
 
     # ── Guided /log flow ──────────────────────────────────────────────────────
 
