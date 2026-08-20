@@ -1766,13 +1766,31 @@ class FinanceBot:
         query = update.callback_query
         await query.answer()
         account = query.data.replace('acc_', '')
-        context.user_data['log_entry']['account'] = account
+        e = context.user_data['log_entry']
+        if e.get('transfer_step') == 'to_account':
+            e['to_account'] = account
+            e.pop('transfer_step', None)
+            await query.edit_message_text(
+                f"From: <b>{e['account']}</b> → To: <b>{account}</b>\n\nAdd a description? (or tap Skip)",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+            )
+            return LOG_DESCRIPTION
+        e['account'] = account
         await query.edit_message_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
         return LOG_AMOUNT
 
     async def log_account(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         account = update.message.text.strip().capitalize()
-        context.user_data['log_entry']['account'] = account
+        e = context.user_data['log_entry']
+        if e.get('transfer_step') == 'to_account':
+            e['to_account'] = account
+            e.pop('transfer_step', None)
+            await update.message.reply_text(
+                f"From: <b>{e['account']}</b> → To: <b>{account}</b>\n\nAdd a description? (or tap Skip)",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+            )
+            return LOG_DESCRIPTION
+        e['account'] = account
         await update.message.reply_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
         return LOG_AMOUNT
 
