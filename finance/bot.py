@@ -739,8 +739,8 @@ class FinanceBot:
             score += 1
 
         income = summary['total_income']
-        score += check("Needs within 50% budget", income > 0 and summary['categories']['Needs'] <= income * 0.5, 2)
-        score += check("Wants within 30% budget", income > 0 and summary['categories']['Wants'] <= income * 0.3, 1)
+        score += check("Needs within 50% budget", income > 0 and summary['categories']['Needs'] <= income * Decimal('0.5'), 2)
+        score += check("Wants within 30% budget", income > 0 and summary['categories']['Wants'] <= income * Decimal('0.3'), 1)
         score += check("Positive net worth", summary['net_worth'] >= 0, 1)
         score += check("Net worth growing vs last month", summary['net_worth'] > prev_summary['net_worth'], 1)
         score += check("All accounts positive", all(b >= 0 for b in balances.values()) if balances else False, 1)
