@@ -528,7 +528,7 @@ class FinanceBot:
         summary['net_worth'] = summary['total_income'] - summary['total_expenses']
         summary['savings_rate'] = (
             round((summary['net_worth'] / summary['total_income']) * 100, 1)
-            if summary['total_income'] > 0 else 0.0
+            if summary['total_income'] > 0 else Decimal(0)
         )
         return summary
 
@@ -1296,9 +1296,9 @@ class FinanceBot:
             income_savings = sum(t.amount for t in txs if t.type == 'Income' and t.category.lower() == 'savings')
             actual_savings = expense_savings - income_savings + summary['categories']['Debt']
 
-            budget_needs = total_income * 0.5
-            budget_wants = total_income * 0.3
-            budget_savings = total_income * 0.2
+            budget_needs = total_income * Decimal('0.5')
+            budget_wants = total_income * Decimal('0.3')
+            budget_savings = total_income * Decimal('0.2')
 
             def status_line(actual, budget):
                 if actual > budget:
@@ -1618,9 +1618,9 @@ class FinanceBot:
                     _inc_sav = sum(t.amount for t in _txs if t.type == 'Income' and t.category.lower() == 'savings')
                     net_savings_debt = _exp_sav - _inc_sav + s['categories']['Debt']
                     budgets = {
-                        'Needs': (s['categories']['Needs'], s['total_income'] * 0.5),
-                        'Wants': (s['categories']['Wants'], s['total_income'] * 0.3),
-                        'Savings/Debt': (net_savings_debt, s['total_income'] * 0.2),
+                        'Needs': (s['categories']['Needs'], s['total_income'] * Decimal('0.5')),
+                        'Wants': (s['categories']['Wants'], s['total_income'] * Decimal('0.3')),
+                        'Savings/Debt': (net_savings_debt, s['total_income'] * Decimal('0.2')),
                     }
                     for label, (actual, budget) in budgets.items():
                         if actual > budget:
