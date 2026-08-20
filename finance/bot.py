@@ -533,9 +533,10 @@ class FinanceBot:
         return summary
 
     def _get_top_expenses(self, records, target_month=None, target_year=None, n=5):
-        """Returns the top N individual expense rows for the period, sorted by amount desc."""
+        """Returns the top N expenses grouped by description, sorted by total amount desc."""
         target_year = target_year or now().year
-        expenses = []
+        # key → (total_amount, category, count)
+        grouped: dict[str, list] = {}
         for row in records:
             if len(row) < 4:
                 continue
@@ -543,7 +544,7 @@ class FinanceBot:
                 trans_type = row[1].strip().capitalize()
                 if trans_type != 'Expense':
                     continue
-                category = row[4].strip().capitalize() if len(row) > 4 else ""
+                category = row[4].strip().title() if len(row) > 4 else ""
                 if category.lower() in NEUTRAL_CATEGORIES:
                     continue
                 if target_month:
@@ -552,9 +553,15 @@ class FinanceBot:
                         continue
                 amount = _parse_amount(row[3])
                 description = row[5].strip() if len(row) > 5 else ""
-                expenses.append((amount, category, description, row[0]))
+                key = description if description else category
+                if key in grouped:
+                    grouped[key][0] += amount
+                    grouped[key][2] += 1
+                else:
+                    grouped[key] = [amount, category, 1]
             except Exception:
                 continue
+        expenses = [(total, cat, key, count) for key, (total, cat, count) in grouped.items()]
         expenses.sort(key=lambda x: x[0], reverse=True)
         return expenses[:n]
 
@@ -1499,9 +1506,12 @@ class FinanceBot:
 
             lines = [f"🏆 <b>Top Expenses — {html.escape(month_name)}</b>\n"]
             medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-            for i, (amount, category, description, date) in enumerate(top):
-                label = description if description else category
-                lines.append(f"{medals[i]} <code>${amount:,.2f}</code> — {label} _({category})_")
+            for i, (amount, category, label, count) in enumerate(top):
+                times = f" ×{count}" if count > 1 else ""
+                lines.append(
+                    f"{medals[i]} <code>${amount:,.2f}</code> — {html.escape(label)}"
+                    f"{html.escape(times)} <i>({html.escape(category)})</i>"
+                )
 
             await update.message.reply_text("\n".join(lines))
 
