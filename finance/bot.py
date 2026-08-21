@@ -54,7 +54,7 @@ COMMANDS = [
     ("setgoal",       "Create or update a savings goal"),
     ("addtogoal",     "Add savings to a goal"),
     # Misc
-    ("exchange",      "USD ↔ RD$ converter with live rate — e.g. /exchange 100"),
+    ("exchange",      "USD ↔ RD$ converter — /exchange 100 or /exchange rd 5000"),
     ("calc",          "Calculator — e.g. /calc 5 * 2"),
     ("quiet",         "Toggle monthly summary push notifications"),
     ("start",         "Check your authorization"),
@@ -1118,28 +1118,27 @@ class FinanceBot:
 
     async def exchange_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        /exchange [amount] [rd]
-        Default: USD → RD$  (most common)
-        Add 'rd' flag to reverse: RD$ → USD
-        Example: /exchange 100      → $100 USD → RD$XXXX
-                 /exchange 5000 rd  → RD$5000  → $XX.XX USD
+        /exchange [amount]       → $amount USD → RD$  (default)
+        /exchange rd [amount]    → RD$amount  → USD
+        Amount is always last.
         """
         args = context.args
         if not args:
             await update.message.reply_text(
                 "Usage:\n"
                 "  <code>/exchange 100</code> — convert $100 USD → RD$\n"
-                "  <code>/exchange 5000 rd</code> — convert RD$5000 → USD"
+                "  <code>/exchange rd 5000</code> — convert RD$5000 → USD"
             )
             return
 
-        try:
-            amount = Decimal(args[0].replace(',', ''))
-        except InvalidOperation:
-            await update.message.reply_text(f"❌ <code>{html.escape(args[0])}</code> is not a valid amount.")
-            return
+        RD_FLAGS = ('rd', 'rdp', 'dop', 'peso', 'pesos')
+        to_rd = args[0].lower() not in RD_FLAGS
 
-        to_rd = len(args) < 2 or args[1].lower() not in ('rd', 'rdp', 'dop', 'peso', 'pesos')
+        try:
+            amount = Decimal(args[-1].replace(',', ''))
+        except InvalidOperation:
+            await update.message.reply_text(f"❌ <code>{html.escape(args[-1])}</code> is not a valid amount.")
+            return
 
         try:
             async with httpx.AsyncClient(timeout=8) as client:
