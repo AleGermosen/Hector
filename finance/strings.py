@@ -748,8 +748,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "es": "¿A qué cuenta transferir?",
     },
     "log_account_confirmed": {
-        "en": "Account: <b>{account}</b>\n\nEnter the amount:",
-        "es": "Cuenta: <b>{account}</b>\n\nIngresa el monto:",
+        "en": "Account: <b>{account}</b>",
+        "es": "Cuenta: <b>{account}</b>",
     },
     "log_transfer_confirmed": {
         "en": "From: <b>{from_acc}</b> → To: <b>{to_acc}</b>\n\nAdd a description? (or tap Skip)",
@@ -760,16 +760,20 @@ STRINGS: dict[str, dict[str, str]] = {
         "es": "❌ <code>{value}</code> no es un monto válido. Intenta de nuevo.",
     },
     "log_select_category": {
-        "en": "Amount: *${amount}*\n\nSelect a category:",
-        "es": "Monto: *${amount}*\n\nSelecciona una categoría:",
+        "en": "Select a category:",
+        "es": "Selecciona una categoría:",
     },
     "log_category_confirmed": {
         "en": "Category: <b>{category}</b>\n\nAdd a description? (or tap Skip)",
         "es": "Categoría: <b>{category}</b>\n\nAgregar descripción? (o toca Omitir)",
     },
     "log_ask_description": {
-        "en": "Amount: <b>${amount}</b>\n\nAdd a description? (or tap Skip)",
-        "es": "Monto: <b>${amount}</b>\n\nAgregar descripción? (o toca Omitir)",
+        "en": "Add a description? (or tap Skip)",
+        "es": "¿Agregar descripción? (o toca Omitir)",
+    },
+    "log_ask_amount": {
+        "en": "Enter the amount:",
+        "es": "Ingresa el monto:",
     },
     "log_category_which": {
         "en": "Which category? ({type})",

@@ -2001,8 +2001,38 @@ class FinanceBot:
             )
             return LOG_DESCRIPTION
         e['account'] = account
-        await query.edit_message_text(t("log_account_confirmed", lang, account=html.escape(account)))
-        return LOG_AMOUNT
+        trans_type = e['type']
+        if trans_type == 'Transfer':
+            e['transfer_step'] = 'to_account'
+            user_id = query.from_user.id
+            sheet = self.get_user_sheet(user_id)
+            known_accounts = []
+            if sheet:
+                try:
+                    records = await self._get_all_values(sheet, user_id)
+                    known_accounts = self._get_known_accounts(records)
+                except Exception:
+                    pass
+            if known_accounts:
+                buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
+                await query.edit_message_text(t("log_transfer_to_account", lang), reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                await query.edit_message_text(t("log_transfer_to_account", lang))
+            return LOG_ACCOUNT
+        elif trans_type == 'Expense':
+            keyboard = [
+                [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
+                 InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
+                [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
+                 InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')]
+            ]
+            await query.edit_message_text(t("log_select_category", lang), reply_markup=InlineKeyboardMarkup(keyboard))
+            return LOG_CATEGORY
+        else:
+            e['category'] = 'Income'
+            skip_btn = InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
+            await query.edit_message_text(t("log_ask_description", lang), reply_markup=skip_btn)
+            return LOG_DESCRIPTION
 
     async def log_account(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         account = update.message.text.strip().capitalize()
@@ -2017,23 +2047,9 @@ class FinanceBot:
             )
             return LOG_DESCRIPTION
         e['account'] = account
-        await update.message.reply_text(t("log_account_confirmed", lang, account=html.escape(account)))
-        return LOG_AMOUNT
-
-    async def log_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text.strip()
-        lang = self._user_lang(update.message.from_user.id, context)
-        amount = _parse_amount_strict(text)
-        if amount is None:
-            await update.message.reply_text(t("log_bad_amount", lang, value=html.escape(text)))
-            return LOG_AMOUNT
-
-        context.user_data['log_entry']['amount'] = amount
-        trans_type = context.user_data['log_entry']['type']
-
+        trans_type = e['type']
         if trans_type == 'Transfer':
-            context.user_data['log_entry']['transfer_step'] = 'to_account'
-            # Offer known accounts as buttons, same as the FROM account step
+            e['transfer_step'] = 'to_account'
             user_id = update.message.from_user.id
             sheet = self.get_user_sheet(user_id)
             known_accounts = []
@@ -2045,30 +2061,35 @@ class FinanceBot:
                     pass
             if known_accounts:
                 buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
-                await update.message.reply_text(
-                    t("log_transfer_to_account", lang),
-                    reply_markup=InlineKeyboardMarkup(buttons)
-                )
+                await update.message.reply_text(t("log_transfer_to_account", lang), reply_markup=InlineKeyboardMarkup(buttons))
             else:
                 await update.message.reply_text(t("log_transfer_to_account", lang))
             return LOG_ACCOUNT
-
-        if trans_type == 'Expense':
+        elif trans_type == 'Expense':
             keyboard = [
                 [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
                  InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
                 [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
                  InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')]
             ]
-            await update.message.reply_text(
-                t("log_select_category", lang, amount=f"{amount:,.2f}"),
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await update.message.reply_text(t("log_select_category", lang), reply_markup=InlineKeyboardMarkup(keyboard))
             return LOG_CATEGORY
         else:
-            # Income — skip category, go to description
-            context.user_data['log_entry']['category'] = 'Income'
-            return await self._log_ask_description(update.message, context, amount, lang)
+            e['category'] = 'Income'
+            skip_btn = InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
+            await update.message.reply_text(t("log_ask_description", lang), reply_markup=skip_btn)
+            return LOG_DESCRIPTION
+
+    async def log_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text.strip()
+        lang = self._user_lang(update.message.from_user.id, context)
+        amount = _parse_amount_strict(text)
+        if amount is None:
+            await update.message.reply_text(t("log_bad_amount", lang, value=html.escape(text)))
+            return LOG_AMOUNT
+
+        context.user_data['log_entry']['amount'] = amount
+        return await self._log_build_and_preview(update.message, context, lang)
 
     async def log_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -2076,19 +2097,26 @@ class FinanceBot:
         category = query.data.replace('cat_', '')
         lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['category'] = category
-        amount = context.user_data['log_entry']['amount']
         await query.edit_message_text(
             t("log_category_confirmed", lang, category=html.escape(category)),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
 
-    async def _log_ask_description(self, message, context, amount, lang: str = "en"):
+    async def _log_ask_description(self, message, context, lang: str = "en"):
         await message.reply_text(
-            t("log_ask_description", lang, amount=f"{amount:,.2f}"),
+            t("log_ask_description", lang),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
+
+    async def _log_ask_amount(self, message_or_query, lang: str = "en"):
+        text = t("log_ask_amount", lang)
+        if hasattr(message_or_query, 'edit_message_text'):
+            await message_or_query.edit_message_text(text)
+        else:
+            await message_or_query.reply_text(text)
+        return LOG_AMOUNT
 
     async def log_description_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles the Skip button for description."""
@@ -2096,12 +2124,12 @@ class FinanceBot:
         await query.answer()
         lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['description'] = ''
-        return await self._log_build_and_preview(query, context, lang)
+        return await self._log_ask_amount(query, lang)
 
     async def log_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = self._user_lang(update.message.from_user.id, context)
         context.user_data['log_entry']['description'] = update.message.text.strip()
-        return await self._log_build_and_preview(update.message, context, lang)
+        return await self._log_ask_amount(update.message, lang)
 
     async def _log_build_and_preview(self, message_or_query, context, lang: str = "en"):
         """Assembles the transaction string from collected log_entry data and shows preview."""
