@@ -329,7 +329,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('top', self.top_expenses_cmd))
         self.application.add_handler(CommandHandler('ytd', self.ytd_cmd))
         self.application.add_handler(CommandHandler('dash', self.dashboard_cmd))
-        self.application.add_handler(CommandHandler('ql', self.quicklog_cmd))
+
         self.application.add_handler(CommandHandler('recurring', self.recurring_cmd))
         self.application.add_handler(CommandHandler('savings', self.savings_cmd))
         self.application.add_handler(CommandHandler('setgoal', self.setgoal_cmd))
