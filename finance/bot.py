@@ -932,9 +932,23 @@ class FinanceBot:
         text = update.message.text.strip()
         # Handle persistent keyboard buttons
         if text == "⚡ Quick Log":
-            await update.message.reply_text(
-                "Send a transaction:\n<code>Expense Cash Needs Lunch 15.50</code>\nor fire a shortcut: <code>/ql name</code>"
-            )
+            user_id = update.message.from_user.id
+            loop = asyncio.get_running_loop()
+            ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
+            shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws)) if ws else {}
+            if shortcuts:
+                buttons = [
+                    [InlineKeyboardButton(f"⚡ {name}", callback_data=f"ql_fire:{name}")]
+                    for name in sorted(shortcuts.keys())
+                ]
+                await update.message.reply_text(
+                    "<b>⚡ Quick Log</b> — tap a shortcut:",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            else:
+                await update.message.reply_text(
+                    "No shortcuts yet.\nAdd one: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
+                )
             return ConversationHandler.END
         if text == "📝 Guided Log":
             context.user_data['log_entry'] = {}
