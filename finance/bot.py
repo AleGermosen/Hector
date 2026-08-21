@@ -20,7 +20,7 @@ from datetime import datetime, time as dt_time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Defaults
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -928,6 +928,26 @@ class FinanceBot:
 
     async def preview_transaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Parses freetext transaction message, shows preview with anomaly check."""
+        text = update.message.text.strip()
+        # Handle persistent keyboard buttons
+        if text == "⚡ Quick Log":
+            await update.message.reply_text(
+                "Send a transaction:\n<code>Expense Cash Needs Lunch 15.50</code>\nor fire a shortcut: <code>/ql name</code>"
+            )
+            return ConversationHandler.END
+        if text == "📝 Guided Log":
+            context.user_data['log_entry'] = {}
+            keyboard = [
+                [InlineKeyboardButton("💸 Expense", callback_data='log_Expense'),
+                 InlineKeyboardButton("💰 Income", callback_data='log_Income')],
+                [InlineKeyboardButton("↔️ Transfer", callback_data='log_Transfer')]
+            ]
+            await update.message.reply_text(
+                "What type of transaction?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return LOG_TYPE
+
         user_id = update.message.from_user.id
         sheet = self.get_user_sheet(user_id)
 
@@ -1037,12 +1057,23 @@ class FinanceBot:
         await update.message.reply_text("❌ Transaction cancelled.")
         return ConversationHandler.END
 
+    _QUICK_KEYBOARD = ReplyKeyboardMarkup(
+        [[KeyboardButton("⚡ Quick Log"), KeyboardButton("📝 Guided Log")]],
+        resize_keyboard=True,
+        persistent=True,
+    )
+
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
         if str(user_id) in self.user_mapping:
-            await update.message.reply_text(f"Welcome back! Your ID is <code>{user_id}</code> and your sheet is linked.")
+            await update.message.reply_text(
+                f"Welcome back! Your ID is <code>{user_id}</code> and your sheet is linked.",
+                reply_markup=self._QUICK_KEYBOARD,
+            )
         else:
-            await update.message.reply_text(f"Hello! You are not authorized. Send your ID to the admin: <code>{user_id}</code>")
+            await update.message.reply_text(
+                f"Hello! You are not authorized. Send your ID to the admin: <code>{user_id}</code>"
+            )
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
