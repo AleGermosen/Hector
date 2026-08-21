@@ -345,6 +345,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('quiet', self.quiet_cmd))
         self.application.add_handler(CallbackQueryHandler(self.undo_callback, pattern='^undo_last$'))
         self.application.add_handler(CallbackQueryHandler(self.category_button_callback, pattern='^cat_'))
+        self.application.add_handler(CallbackQueryHandler(self.ql_fire_callback, pattern='^ql_fire:'))
 
         # Guided logging flow: /log
         log_conv = ConversationHandler(
@@ -1740,25 +1741,29 @@ class FinanceBot:
 
         args = context.args
 
-        # No args — list shortcuts
+        # No args — show shortcut buttons
         if not args:
             loop = asyncio.get_running_loop()
             ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
             if not ws:
                 await update.message.reply_text("❌ Could not open shortcuts sheet.")
-                return
+                return ConversationHandler.END
             shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
             if not shortcuts:
                 await update.message.reply_text(
                     "No shortcuts saved yet.\n"
                     "Add one: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
                 )
-                return
-            lines = ["<b>⚡ Your shortcuts:</b>\n"]
-            for name, tx in sorted(shortcuts.items()):
-                lines.append(f"  <code>/ql {name}</code> → <code>{tx}</code>")
-            await update.message.reply_text("\n".join(lines))
-            return
+                return ConversationHandler.END
+            buttons = [
+                [InlineKeyboardButton(f"⚡ {name}", callback_data=f"ql_fire:{name}")]
+                for name in sorted(shortcuts.keys())
+            ]
+            await update.message.reply_text(
+                "<b>⚡ Quick Log</b> — tap a shortcut:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            return ConversationHandler.END
 
         subcommand = args[0].lower()
 
@@ -1862,6 +1867,38 @@ class FinanceBot:
             return ConversationHandler.END
         await self._show_preview(update.message, context, rows, preview, sheet)
         return CONFIRM_TRANSACTION
+
+    async def ql_fire_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handles inline button taps from the /ql shortcut list."""
+        query = update.callback_query
+        await query.answer()
+        name = query.data.replace('ql_fire:', '', 1)
+        user_id = query.from_user.id
+        sheet = self.get_user_sheet(user_id)
+        if not sheet:
+            await query.edit_message_text("❌ Unauthorized.")
+            return
+
+        loop = asyncio.get_running_loop()
+        ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
+        shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
+        transaction = shortcuts.get(name)
+        if not transaction:
+            await query.edit_message_text(f"❌ Shortcut <code>{html.escape(name)}</code> not found.")
+            return
+
+        if '?' in transaction:
+            context.user_data['ql_template'] = transaction
+            context.user_data['ql_user_id'] = user_id
+            await query.edit_message_text(f"⚡ <b>{html.escape(name)}</b> — enter the amount:")
+            # The ql_amount_conv ConversationHandler will pick up the next message
+            return
+
+        rows, preview, error = self._parse_transaction_text(transaction, user_id)
+        if error:
+            await query.edit_message_text(f"❌ Shortcut is broken: {error}")
+            return
+        await self._show_preview(query.message, context, rows, preview, sheet)
 
     # ── Guided /log flow ──────────────────────────────────────────────────────
 
