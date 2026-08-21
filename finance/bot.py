@@ -359,7 +359,7 @@ class FinanceBot:
                 LOG_ACCOUNT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, self.log_account),
                                   CallbackQueryHandler(self.log_account_callback)],
                 LOG_AMOUNT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, self.log_amount)],
-                LOG_CATEGORY:    [CallbackQueryHandler(self.log_category_callback)],
+                LOG_CATEGORY:    [CallbackQueryHandler(self.log_category_callback, pattern='^logcat_')],
                 LOG_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.log_description),
                                   CallbackQueryHandler(self.log_description_callback)],
                 CONFIRM_TRANSACTION: [CallbackQueryHandler(self.confirm_transaction_callback)],
@@ -2021,10 +2021,10 @@ class FinanceBot:
             return LOG_ACCOUNT
         elif trans_type == 'Expense':
             keyboard = [
-                [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
-                 InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
-                [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
-                 InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')]
+                [InlineKeyboardButton(t("btn_needs", lang), callback_data='logcat_Needs'),
+                 InlineKeyboardButton(t("btn_wants", lang), callback_data='logcat_Wants')],
+                [InlineKeyboardButton(t("btn_savings", lang), callback_data='logcat_Savings'),
+                 InlineKeyboardButton(t("btn_debt", lang), callback_data='logcat_Debt')]
             ]
             await query.edit_message_text(t("log_select_category", lang), reply_markup=InlineKeyboardMarkup(keyboard))
             return LOG_CATEGORY
@@ -2067,10 +2067,10 @@ class FinanceBot:
             return LOG_ACCOUNT
         elif trans_type == 'Expense':
             keyboard = [
-                [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
-                 InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
-                [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
-                 InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')]
+                [InlineKeyboardButton(t("btn_needs", lang), callback_data='logcat_Needs'),
+                 InlineKeyboardButton(t("btn_wants", lang), callback_data='logcat_Wants')],
+                [InlineKeyboardButton(t("btn_savings", lang), callback_data='logcat_Savings'),
+                 InlineKeyboardButton(t("btn_debt", lang), callback_data='logcat_Debt')]
             ]
             await update.message.reply_text(t("log_select_category", lang), reply_markup=InlineKeyboardMarkup(keyboard))
             return LOG_CATEGORY
@@ -2094,7 +2094,7 @@ class FinanceBot:
     async def log_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        category = query.data.replace('cat_', '')
+        category = query.data.replace('logcat_', '')
         lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['category'] = category
         await query.edit_message_text(
