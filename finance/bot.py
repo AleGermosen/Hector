@@ -1060,7 +1060,6 @@ class FinanceBot:
     _QUICK_KEYBOARD = ReplyKeyboardMarkup(
         [[KeyboardButton("⚡ Quick Log"), KeyboardButton("📝 Guided Log")]],
         resize_keyboard=True,
-        persistent=True,
     )
 
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
