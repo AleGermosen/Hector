@@ -810,40 +810,32 @@ class FinanceBot:
             return rows, preview, None
 
         # Income / Expense pattern
-        parts = text.split(maxsplit=4)
-
-        if len(parts) < 3:
-            return None, None, (
-                "❌ Too few arguments.\n\n"
-                "Format: <code>[Income/Expense] [Account] [Amount] [Category] [Description]</code>\n"
-                "Example: <code>Expense Cash 50 Needs Groceries</code>"
-            )
+        # Format: [Type] [Account] [Category] [Description...] [Amount]
+        parts = text.split()
 
         trans_type = parts[0].capitalize()
         if trans_type not in ('Income', 'Expense'):
             return None, None, (
-                f"❌ Unknown type <code>{parts[0]}</code>. Must be <code>Income</code> or <code>Expense</code>.\n\n"
-                "Example: <code>Expense Cash 50 Needs Groceries</code>"
-            )
-
-        if len(parts) < 3:
-            return None, None, "❌ Missing amount. Format: <code>[Income/Expense] [Account] [Amount] [Category]</code>"
-
-        amount = _parse_amount_strict(parts[2])
-        if amount is None:
-            return None, None, (
-                f"❌ <code>{parts[2]}</code> is not a valid amount. Use a number like <code>50</code>, <code>1,500</code>, or <code>$50</code>."
+                f"❌ Unknown type <code>{html.escape(parts[0])}</code>. Must be <code>Income</code> or <code>Expense</code>.\n\n"
+                "Example: <code>Expense Cash Needs Groceries 50</code>"
             )
 
         if len(parts) < 4:
             return None, None, (
-                "❌ Missing category. Allowed: <code>Needs</code>, <code>Wants</code>, <code>Savings</code>, <code>Debt</code>\n"
-                "Example: <code>Expense Cash 50 Needs Groceries</code>"
+                "❌ Too few arguments.\n\n"
+                "Format: <code>[Income/Expense] [Account] [Category] [Amount]</code>\n"
+                "Example: <code>Expense Cash Needs Groceries 50</code>"
+            )
+
+        amount = _parse_amount_strict(parts[-1])
+        if amount is None:
+            return None, None, (
+                f"❌ <code>{html.escape(parts[-1])}</code> is not a valid amount. Use a number like <code>50</code>, <code>1,500</code>, or <code>$50</code>."
             )
 
         account = parts[1].capitalize()
-        category = parts[3]
-        description = parts[4] if len(parts) > 4 else ""
+        category = parts[2]
+        description = " ".join(parts[3:-1])
 
         if str(user_id) in self.strict_users and trans_type == 'Expense':
             allowed = ['Needs', 'Wants', 'Savings', 'Debt']
@@ -950,9 +942,9 @@ class FinanceBot:
         if error:
             # 5.3: strict-mode users get category buttons instead of a text error
             if str(user_id) in self.strict_users and "category" in error.lower():
-                parts = update.message.text.split(maxsplit=4)
-                if len(parts) >= 3 and parts[0].capitalize() in ('Income', 'Expense'):
-                    partial_tx = " ".join(parts[:3])  # "Expense Cash 50"
+                parts = update.message.text.split()
+                if len(parts) >= 2 and parts[0].capitalize() in ('Income', 'Expense'):
+                    partial_tx = " ".join(parts[:2])  # "Expense Cash"
                     await self._show_category_keyboard(
                         update.message, context, partial_tx, parts[0].capitalize()
                     )
@@ -1063,8 +1055,8 @@ class FinanceBot:
         cmd_map = {name: desc for name, desc in COMMANDS}
         lines = [
             "<b>Quick-log format:</b>",
-            "<code>Expense Cash 15.50 Needs Lunch</code>",
-            "<code>Income Digital 2000 Salary</code>",
+            "<code>Expense Cash Needs Lunch 15.50</code>",
+            "<code>Income Digital Salary 2000</code>",
             "<code>Transfer Digital to Cash 1500</code>",
             "",
         ]
@@ -1729,7 +1721,7 @@ class FinanceBot:
             if not shortcuts:
                 await update.message.reply_text(
                     "No shortcuts saved yet.\n"
-                    "Add one: <code>/ql add lunch Expense Cash 15 Wants Lunch</code>"
+                    "Add one: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
                 )
                 return
             lines = ["<b>⚡ Your shortcuts:</b>\n"]
@@ -1745,7 +1737,7 @@ class FinanceBot:
             if len(args) < 3:
                 await update.message.reply_text(
                     "Usage: <code>/ql add <name> <transaction></code>\n"
-                    "Example: <code>/ql add lunch Expense Cash 15 Wants Lunch</code>"
+                    "Example: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
                 )
                 return
             name = args[1].lower()
@@ -2012,9 +2004,9 @@ class FinanceBot:
                 tx += f" {e['description']}"
         elif trans_type == 'Income':
             category = 'Salary'
-            tx = f"Income {e['account']} {e['amount']} {category} {e.get('description', '')}".strip()
+            tx = f"Income {e['account']} {category} {e.get('description', '')} {e['amount']}".strip()
         else:
-            tx = f"Expense {e['account']} {e['amount']} {e['category']} {e.get('description', '')}".strip()
+            tx = f"Expense {e['account']} {e['category']} {e.get('description', '')} {e['amount']}".strip()
 
         rows, preview, error = self._parse_transaction_text(tx, user_id)
         if error:
@@ -2053,7 +2045,7 @@ class FinanceBot:
             if not items:
                 await update.message.reply_text(
                     "No recurring transactions set up.\n\n"
-                    "Add one: <code>/recurring add rent 1 Expense Cash 1500 Needs Rent</code>\n"
+                    "Add one: <code>/recurring add rent 1 Expense Cash Needs Rent 1500</code>\n"
                     "<i>(This would log rent on the 1st of each month)</i>"
                 )
                 return
@@ -2071,7 +2063,7 @@ class FinanceBot:
             if len(args) < 4:
                 await update.message.reply_text(
                     "Usage: <code>/recurring add <name> <day> <transaction></code>\n"
-                    "Example: <code>/recurring add rent 1 Expense Cash 1500 Needs Rent</code>"
+                    "Example: <code>/recurring add rent 1 Expense Cash Needs Rent 1500</code>"
                 )
                 return
             name = args[1]
