@@ -28,6 +28,8 @@ from telegram.ext import (
     filters, ConversationHandler, CallbackQueryHandler
 )
 
+from finance.strings import t
+
 logger = logging.getLogger(__name__)
 
 # ── Command registry — single source of truth for menu and /help ──────────────
@@ -57,6 +59,7 @@ COMMANDS = [
     ("exchange",      "USD ↔ RD$ converter — /exchange 100 or /exchange rd 5000"),
     ("calc",          "Calculator — e.g. /calc 5 * 2"),
     ("quiet",         "Toggle monthly summary push notifications"),
+    ("lang",          "Switch language — /lang en or /lang es"),
     ("start",         "Check your authorization"),
     ("help",          "Show this command list"),
     ("cancel",        "Cancel the current operation"),
@@ -343,6 +346,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('undo', self.undo_cmd))
         self.application.add_handler(CommandHandler('trend', self.trend_cmd))
         self.application.add_handler(CommandHandler('quiet', self.quiet_cmd))
+        self.application.add_handler(CommandHandler('lang', self.lang_cmd))
         self.application.add_handler(CallbackQueryHandler(self.undo_callback, pattern='^undo_last$'))
         self.application.add_handler(CallbackQueryHandler(self.category_button_callback, pattern='^cat_'))
         self.application.add_handler(CallbackQueryHandler(self.ql_fire_callback, pattern='^ql_fire:'))
@@ -406,6 +410,22 @@ class FinanceBot:
             self._sheet_cache.pop(sheet_identifier, None)  # force refetch next time
             logger.error(f"Could not open sheet for user {user_id}: {e}")
             return None
+
+    def _user_lang(self, user_id, context) -> str:
+        """Return the user's chosen language ('en' or 'es'), defaulting to 'en'."""
+        return context.bot_data.get('user_lang', {}).get(str(user_id), 'en')
+
+    async def lang_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/lang en|es — switch the bot's reply language for this session."""
+        args = context.args
+        if not args or args[0].lower() not in ('en', 'es'):
+            lang = self._user_lang(update.message.from_user.id, context)
+            await update.message.reply_text(t("lang_usage", lang))
+            return
+        lang = args[0].lower()
+        context.bot_data.setdefault('user_lang', {})[str(update.message.from_user.id)] = lang
+        key = "lang_set_es" if lang == "es" else "lang_set_en"
+        await update.message.reply_text(t(key, lang))
 
     def _invalidate_ledger_cache(self, user_id):
         self._ledger_cache.pop(str(user_id), None)
@@ -898,31 +918,33 @@ class FinanceBot:
             )
         self._invalidate_ledger_cache(user_id)
 
-    async def _show_preview(self, message, context, rows, preview, sheet):
+    async def _show_preview(self, message, context, rows, preview, sheet, lang: str = "en"):
         """Shared helper: shows the transaction preview with confirm/cancel buttons.
         Checks for anomalies if it's an expense. Called from both freetext and /log flows."""
         context.user_data['pending_rows'] = rows
+        context.user_data['preview_lang'] = lang
         warning = ""
 
         # Anomaly detection — only for single-row expenses
         row = rows[0]
         if row[1] == 'Expense' and row[4] != 'Transfer':
             try:
-                loop = asyncio.get_running_loop()
+                user_id = message.from_user.id if hasattr(message, 'from_user') else message.chat_id
                 records = await self._get_all_values(sheet, user_id)
                 avg = self._get_category_average(records, row[4])
                 amount = _parse_amount(row[3])
                 if avg > 0 and amount >= avg * 3:
-                    warning = f"\n\n⚠️ <b>Heads up:</b> This is unusually high for <b>{row[4]}</b> (your avg is <code>${avg:,.2f}</code>)."
+                    warning = t("preview_anomaly_warning", lang,
+                                category=html.escape(row[4]), avg=f"{avg:,.2f}")
             except Exception:
                 pass
 
         keyboard = [
-            [InlineKeyboardButton("✅ Log it", callback_data='tx_confirm'),
-             InlineKeyboardButton("❌ Cancel", callback_data='tx_cancel')]
+            [InlineKeyboardButton(t("btn_log_it", lang), callback_data='tx_confirm'),
+             InlineKeyboardButton(t("btn_cancel", lang), callback_data='tx_cancel')]
         ]
         await message.reply_text(
-            f"{preview}{warning}\n\nLog this transaction?",
+            f"{preview}{warning}\n\n{t('preview_confirm_prompt', lang)}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CONFIRM_TRANSACTION
@@ -930,9 +952,11 @@ class FinanceBot:
     async def preview_transaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Parses freetext transaction message, shows preview with anomaly check."""
         text = update.message.text.strip()
-        # Handle persistent keyboard buttons
-        if text == "⚡ Quick Log":
-            user_id = update.message.from_user.id
+        user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
+
+        # Handle persistent keyboard buttons (match either EN or ES label)
+        if text in (t("btn_quick_log", "en"), t("btn_quick_log", "es")):
             loop = asyncio.get_running_loop()
             ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
             shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws)) if ws else {}
@@ -942,35 +966,29 @@ class FinanceBot:
                     for name in sorted(shortcuts.keys())
                 ]
                 await update.message.reply_text(
-                    "<b>⚡ Quick Log</b> — tap a shortcut:",
+                    t("ql_header", lang),
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
             else:
-                await update.message.reply_text(
-                    "No shortcuts yet.\nAdd one: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
-                )
+                await update.message.reply_text(t("ql_none_saved", lang))
             return ConversationHandler.END
-        if text == "📝 Guided Log":
+        if text in (t("btn_guided_log", "en"), t("btn_guided_log", "es")):
             context.user_data['log_entry'] = {}
             keyboard = [
-                [InlineKeyboardButton("💸 Expense", callback_data='log_Expense'),
-                 InlineKeyboardButton("💰 Income", callback_data='log_Income')],
-                [InlineKeyboardButton("↔️ Transfer", callback_data='log_Transfer')]
+                [InlineKeyboardButton(t("log_btn_expense", lang), callback_data='log_Expense'),
+                 InlineKeyboardButton(t("log_btn_income", lang), callback_data='log_Income')],
+                [InlineKeyboardButton(t("log_btn_transfer", lang), callback_data='log_Transfer')]
             ]
             await update.message.reply_text(
-                "What type of transaction?",
+                t("log_what_type", lang),
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return LOG_TYPE
 
-        user_id = update.message.from_user.id
         sheet = self.get_user_sheet(user_id)
 
         if not sheet:
-            await update.message.reply_text(
-                "❌ You are not authorized. Ask the admin to link your account.\n"
-                f"Your Telegram ID is: <code>{user_id}</code>"
-            )
+            await update.message.reply_text(t("unauthorized_detail", lang, user_id=user_id))
             return ConversationHandler.END
 
         rows, preview, error = self._parse_transaction_text(update.message.text, user_id)
@@ -981,33 +999,34 @@ class FinanceBot:
                 if len(parts) >= 2 and parts[0].capitalize() in ('Income', 'Expense'):
                     partial_tx = " ".join(parts[:2])  # "Expense Cash"
                     await self._show_category_keyboard(
-                        update.message, context, partial_tx, parts[0].capitalize()
+                        update.message, context, partial_tx, parts[0].capitalize(), lang
                     )
                     return CONFIRM_TRANSACTION
             await update.message.reply_text(error)
             return ConversationHandler.END
 
-        return await self._show_preview(update.message, context, rows, preview, sheet)
+        return await self._show_preview(update.message, context, rows, preview, sheet, lang)
 
     async def confirm_transaction_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles the confirm/cancel button after previewing a transaction."""
         query = update.callback_query
         await query.answer()
+        lang = context.user_data.get('preview_lang', self._user_lang(query.from_user.id, context))
 
         if query.data == 'tx_cancel':
-            await query.edit_message_text("❌ Transaction cancelled.")
+            await query.edit_message_text(t("tx_cancelled", lang))
             context.user_data.pop('pending_rows', None)
             return ConversationHandler.END
 
         rows = context.user_data.pop('pending_rows', None)
         if not rows:
-            await query.edit_message_text("❌ Something went wrong. Please try again.")
+            await query.edit_message_text(t("something_went_wrong", lang, corr_id="n/a"))
             return ConversationHandler.END
 
         user_id = query.from_user.id
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await query.edit_message_text("❌ Could not reach your sheet. Try again.")
+            await query.edit_message_text(t("could_not_reach_sheet", lang))
             return ConversationHandler.END
 
         try:
@@ -1021,19 +1040,23 @@ class FinanceBot:
             trans_type, account, amount, category = row[1], row[2], row[3], row[4]
             description = row[5] if len(row) > 5 else ""
             emoji = "💰" if trans_type == 'Income' else "💸"
-            account_balance = balances.get(account, 0.0)
+            account_balance = balances.get(account, Decimal(0))
 
             amount_display = _parse_amount(amount)
+            acc_label = t("preview_account", lang)
+            amt_label = t("preview_amount", lang)
+            cat_label = t("preview_category", lang)
+            note_label = t("preview_note", lang)
             confirmation = (
-                f"✅ <b>Logged successfully!</b>\n\n"
-                f"{emoji} <b>{trans_type}</b>\n"
-                f"  Account:  <b>{account}</b>\n"
-                f"  Amount:   <b>${amount_display:,.2f}</b>\n"
-                f"  Category: <b>{category}</b>"
+                f"{t('logged_ok', lang)}\n\n"
+                f"{emoji} <b>{html.escape(trans_type)}</b>\n"
+                f"  {acc_label}:  <b>{html.escape(account)}</b>\n"
+                f"  {amt_label}:   <b>${amount_display:,.2f}</b>\n"
+                f"  {cat_label}: <b>{html.escape(category)}</b>"
             )
             if description:
-                confirmation += f"\n  Note:     {html.escape(description)}"
-            confirmation += f"\n\n  📊 <b>{html.escape(account)} balance</b>: <code>${account_balance:,.2f}</code>"
+                confirmation += f"\n  {note_label}:     {html.escape(description)}"
+            confirmation += f"\n\n  {t('logged_account_balance', lang, account=html.escape(account), balance=f'{account_balance:,.2f}')}"
 
             # Budget alert — only for expenses in a tracked category
             budget_pct = {'Needs': 0.5, 'Wants': 0.3, 'Debt': 0.2}
@@ -1046,10 +1069,8 @@ class FinanceBot:
                         spent = s['categories'].get(category, 0)
                         if spent > budget_limit:
                             over = spent - budget_limit
-                            confirmation += (
-                                f"\n\n⚠️ <b>Budget alert:</b> You've exceeded your "
-                                f"<b>{html.escape(category)}</b> budget by <code>${over:,.2f}</code> this month."
-                            )
+                            confirmation += t("budget_alert", lang,
+                                              category=html.escape(category), over=f"{over:,.2f}")
                 except Exception:
                     pass
 
@@ -1057,49 +1078,61 @@ class FinanceBot:
             self.application.bot_data.setdefault('last_rows', {})[str(user_id)] = rows
 
             undo_keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("↩️ Undo", callback_data='undo_last')]]
+                [[InlineKeyboardButton(t("btn_undo", lang), callback_data='undo_last')]]
             )
             await query.edit_message_text(confirmation, reply_markup=undo_keyboard)
 
         except Exception as e:
-            logger.error(f"Sheet write error: {e}")
-            await query.edit_message_text(f"❌ Failed to save: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Sheet write error: {e}")
+            await query.edit_message_text(t("logged_error", lang, detail=corr_id))
 
         return ConversationHandler.END
 
     async def cancel_transaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        lang = self._user_lang(update.message.from_user.id, context)
         context.user_data.pop('pending_rows', None)
-        await update.message.reply_text("❌ Transaction cancelled.")
+        await update.message.reply_text(t("cancel_reply", lang))
         return ConversationHandler.END
 
-    _QUICK_KEYBOARD = ReplyKeyboardMarkup(
-        [[KeyboardButton("⚡ Quick Log"), KeyboardButton("📝 Guided Log")]],
-        resize_keyboard=True,
-    )
+    def _quick_keyboard(self, lang: str) -> ReplyKeyboardMarkup:
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(t("btn_quick_log", lang)), KeyboardButton(t("btn_guided_log", lang))]],
+            resize_keyboard=True,
+        )
 
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if str(user_id) in self.user_mapping:
             await update.message.reply_text(
-                f"Welcome back! Your ID is <code>{user_id}</code> and your sheet is linked.",
-                reply_markup=self._QUICK_KEYBOARD,
+                t("welcome_back", lang, user_id=user_id),
+                reply_markup=self._quick_keyboard(lang),
             )
         else:
             await update.message.reply_text(
-                f"Hello! You are not authorized. Send your ID to the admin: <code>{user_id}</code>"
+                t("welcome_unauthorized", lang, user_id=user_id)
             )
 
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"FinanceBot: Help command triggered by user {update.effective_user.id}")
+        user_id = update.effective_user.id
+        lang = self._user_lang(user_id, context)
         sections = {
-            "📝 Logging": ["log", "ql", "undo", "recent", "recurring"],
-            "📊 Reports": ["dash", "summary", "balance", "top", "ytd", "net", "expenses", "calcexpenses", "savings", "trend"],
-            "🎯 Goals": ["goals", "setgoal", "addtogoal"],
-            "⚙️ Misc": ["exchange", "calc", "quiet", "start", "help", "cancel"],
+            t("help_section_logging", lang): ["log", "ql", "undo", "recent", "recurring"],
+            t("help_section_reports", lang): ["dash", "summary", "balance", "top", "ytd", "net", "expenses", "calcexpenses", "savings", "trend"],
+            t("help_section_goals", lang): ["goals", "setgoal", "addtogoal"],
+            t("help_section_misc", lang): ["exchange", "calc", "quiet", "lang", "start", "help", "cancel"],
         }
-        cmd_map = {name: desc for name, desc in COMMANDS}
+        cmd_desc_map = {
+            name: t(f"cmd_desc_{name}", lang)
+            for name in ["log", "ql", "undo", "recent", "recurring", "dash", "summary", "balance",
+                         "top", "ytd", "net", "expenses", "calcexpenses", "savings", "trend",
+                         "goals", "setgoal", "addtogoal", "exchange", "calc", "quiet", "lang",
+                         "start", "help", "cancel"]
+        }
         lines = [
-            "<b>Quick-log format:</b>",
+            t("help_format_header", lang),
             "<code>Expense Cash Needs Lunch 15.50</code>",
             "<code>Income Digital Salary 2000</code>",
             "<code>Transfer Digital to Cash 1500</code>",
@@ -1108,50 +1141,53 @@ class FinanceBot:
         for section, names in sections.items():
             lines.append(f"<b>{section}</b>")
             for name in names:
-                desc = cmd_map.get(name, "")
+                desc = cmd_desc_map.get(name, "")
                 lines.append(f"  /{name} — {html.escape(desc)}")
             lines.append("")
-        lines.append("<i>Every transaction shows a preview before being saved.</i>")
+        lines.append(t("help_footer", lang))
         await update.message.reply_text("\n".join(lines))
 
     async def calculate_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
 
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             balances = self._get_balance_by_account(records)
 
             if not balances:
-                await update.message.reply_text("No transactions found to calculate balance.")
+                await update.message.reply_text(t("balance_no_transactions", lang))
                 return
 
-            response = "💰 <b>Your Account Balances:</b>\n"
+            response = t("balance_header", lang) + "\n"
             for acc, bal in balances.items():
                 indicator = "🟢" if bal >= 0 else "🔴"
-                response += f"{indicator} {acc}: <code>${bal:,.2f}</code>\n"
+                response += f"{indicator} {html.escape(acc)}: <code>${bal:,.2f}</code>\n"
 
             await update.message.reply_text(response)
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Balance error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def calculator(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        lang = self._user_lang(update.message.from_user.id, context)
         expression = " ".join(context.args)
         if not expression:
-            await update.message.reply_text("Usage: /calc <expression>  e.g. <code>/calc 5 * 2</code>")
+            await update.message.reply_text(t("calc_usage", lang))
             return
         try:
             result = _safe_eval(expression)
-            await update.message.reply_text(f"🔢 Result: <code>{result:g}</code>")
+            await update.message.reply_text(t("calc_result", lang, result=f"{result:g}"))
         except (ValueError, ZeroDivisionError) as e:
             await update.message.reply_text(f"❌ {html.escape(str(e))}")
         except Exception:
-            await update.message.reply_text("❌ Invalid expression.")
+            await update.message.reply_text(t("calc_invalid", lang))
 
     async def exchange_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1159,13 +1195,10 @@ class FinanceBot:
         /exchange rd [amount]    → RD$amount  → USD
         Amount is always last.
         """
+        lang = self._user_lang(update.message.from_user.id, context)
         args = context.args
         if not args:
-            await update.message.reply_text(
-                "Usage:\n"
-                "  <code>/exchange 100</code> — convert $100 USD → RD$\n"
-                "  <code>/exchange rd 5000</code> — convert RD$5000 → USD"
-            )
+            await update.message.reply_text(t("exchange_usage", lang))
             return
 
         RD_FLAGS = ('rd', 'rdp', 'dop', 'peso', 'pesos')
@@ -1174,7 +1207,7 @@ class FinanceBot:
         try:
             amount = Decimal(args[-1].replace(',', ''))
         except InvalidOperation:
-            await update.message.reply_text(f"❌ <code>{html.escape(args[-1])}</code> is not a valid amount.")
+            await update.message.reply_text(t("exchange_bad_amount", lang, value=html.escape(args[-1])))
             return
 
         try:
@@ -1184,47 +1217,45 @@ class FinanceBot:
                 data = resp.json()
             rate = Decimal(str(data['rates']['DOP']))
         except Exception:
-            await update.message.reply_text("❌ Could not fetch exchange rate. Try again in a moment.")
+            await update.message.reply_text(t("exchange_rate_error", lang))
             return
 
         if to_rd:
             result = amount * rate
             await update.message.reply_text(
-                f"💱 <b>${amount:,.2f} USD → RD${result:,.2f}</b>\n"
-                f"<i>Live rate: RD${rate:,.4f} per $1 USD</i>"
+                t("exchange_usd_to_rd", lang, usd=f"{amount:,.2f}", rd=f"{result:,.2f}", rate=f"{rate:,.4f}")
             )
         else:
             result = amount / rate
             await update.message.reply_text(
-                f"💱 <b>RD${amount:,.2f} → ${result:,.2f} USD</b>\n"
-                f"<i>Live rate: RD${rate:,.4f} per $1 USD</i>"
+                t("exchange_rd_to_usd", lang, rd=f"{amount:,.2f}", usd=f"{result:,.2f}", rate=f"{rate:,.4f}")
             )
 
     async def generate_expenses_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
 
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         target_month = None
         target_year = now().year
-        chart_title = "Expenses Breakdown (All Time)"
+        period_suffix = ""
 
         if context.args:
             arg = context.args[0]
             target_month = self._parse_month(arg)
             if not target_month:
-                await update.message.reply_text(
-                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/expenses january</code> or <code>/expenses jan</code>."
-                )
+                await update.message.reply_text(t("expenses_bad_month", lang, arg=html.escape(arg)))
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
-            chart_title = f"Expenses Breakdown ({month_name} {target_year})"
+            period_suffix = f" ({month_name} {target_year})"
+
+        chart_title = t("expenses_chart_title", lang, period=period_suffix)
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             categories = summary['categories']
@@ -1234,8 +1265,8 @@ class FinanceBot:
             total_categorized = sum(sizes)
 
             if not sizes and summary['other_expenses'] == 0:
-                period = f" for {datetime(target_year, target_month, 1).strftime('%B %Y')}" if target_month else ""
-                await update.message.reply_text(f"No expenses found{period}.")
+                period_str = f" for {datetime(target_year, target_month, 1).strftime('%B %Y')}" if target_month else ""
+                await update.message.reply_text(t("expenses_none", lang, period=period_str))
                 return
 
             buf = None
@@ -1254,9 +1285,12 @@ class FinanceBot:
                 pct = (size / total_categorized) * 100 if total_categorized > 0 else 0
                 breakdown_text += f"  • <b>{html.escape(label)}</b>: ${size:,.2f} ({pct:.1f}%)\n"
             if summary['other_expenses'] > 0:
-                breakdown_text += f"  • <b>Other</b>: ${summary['other_expenses']:,.2f}\n"
-            breakdown_text += f"\n<b>Total Expenses</b>: ${summary['total_expenses']:,.2f}"
-            breakdown_text += f"\n<b>Net Worth</b>: <code>${summary['net_worth']:,.2f}</code>"
+                other_label = t("expenses_other", lang)
+                breakdown_text += f"  • <b>{other_label}</b>: ${summary['other_expenses']:,.2f}\n"
+            total_fmt = f"{summary['total_expenses']:,.2f}"
+            net_fmt = f"{summary['net_worth']:,.2f}"
+            breakdown_text += f"\n{t('expenses_total', lang, total=total_fmt)}"
+            breakdown_text += f"\n{t('expenses_net', lang, net=net_fmt)}"
 
             if buf:
                 await update.message.reply_photo(photo=buf, caption=breakdown_text)
@@ -1264,34 +1298,33 @@ class FinanceBot:
                 await update.message.reply_text(breakdown_text)
 
         except Exception as e:
-            logger.error(f"Chart Error: {e}")
-            await update.message.reply_text(f"❌ Error generating chart: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Chart Error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def calculate_net_worth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
 
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         target_month = None
         target_year = now().year
-        title_suffix = "(All Time)"
+        title_suffix = "(All Time)" if lang == "en" else "(Todo el Tiempo)"
 
         if context.args:
             arg = context.args[0]
             target_month = self._parse_month(arg)
             if not target_month:
-                await update.message.reply_text(
-                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/net january</code>."
-                )
+                await update.message.reply_text(t("net_bad_month", lang, arg=html.escape(arg)))
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
             title_suffix = f"({month_name} {target_year})"
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             total_income = summary['total_income']
@@ -1299,7 +1332,7 @@ class FinanceBot:
             net_worth = summary['net_worth']
 
             if total_income == 0 and total_expenses == 0:
-                await update.message.reply_text(f"No records found {title_suffix.lower()}.")
+                await update.message.reply_text(t("net_no_records", lang, period=title_suffix.lower()))
                 return
 
             if total_income > 0:
@@ -1313,10 +1346,11 @@ class FinanceBot:
 
             if total_income > 0 and net_worth >= 0:
                 fig, ax = plt.subplots()
-                ax.pie([float(total_expenses), float(net_worth)], labels=['Expenses', 'Net Worth'],
+                ax.pie([float(total_expenses), float(net_worth)],
+                       labels=[t("net_chart_label_expenses", lang), t("net_chart_label_net", lang)],
                        autopct='%1.1f%%', startangle=90, colors=['#ff9999', '#66b3ff'])
                 ax.axis('equal')
-                plt.title(f'Net Worth Breakdown {title_suffix}')
+                plt.title(f'{t("net_header", lang, period=title_suffix)}')
                 buf = io.BytesIO()
                 plt.savefig(buf, format='png')
                 buf.seek(0)
@@ -1325,15 +1359,15 @@ class FinanceBot:
 
             net_emoji = "📈" if net_worth >= 0 else "📉"
             breakdown_text = (
-                f"💰 <b>Net Worth Summary {html.escape(title_suffix)}:</b>\n\n"
-                f"  • <b>Total Income</b>:   <code>${total_income:,.2f}</code>\n"
-                f"  • <b>Total Expenses</b>: <code>${total_expenses:,.2f}</code>"
+                f"{t('net_header', lang, period=html.escape(title_suffix))}\n\n"
+                f"  {t('net_total_income', lang, amount=f'{total_income:,.2f}')}\n"
+                f"  {t('net_total_expenses', lang, amount=f'{total_expenses:,.2f}')}"
             )
             if total_income > 0:
-                breakdown_text += f" ({expense_pct:.1f}% of income)"
-            breakdown_text += f"\n\n{net_emoji} <b>Net Worth</b>: <code>${net_worth:,.2f}</code>"
+                breakdown_text += t("net_pct_of_income", lang, pct=f"{expense_pct:.1f}")
+            breakdown_text += f"\n\n{t('net_worth_line', lang, emoji=net_emoji, amount=f'{net_worth:,.2f}')}"
             if total_income > 0:
-                breakdown_text += f" ({net_pct:.1f}% of income remaining)"
+                breakdown_text += t("net_pct_remaining", lang, pct=f"{net_pct:.1f}")
 
             if chart_generated:
                 await update.message.reply_photo(photo=buf, caption=breakdown_text)
@@ -1341,50 +1375,47 @@ class FinanceBot:
                 await update.message.reply_text(breakdown_text)
 
         except Exception as e:
-            logger.error(f"Net Worth Error: {e}")
-            await update.message.reply_text(f"❌ Error calculating net worth: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Net Worth Error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def calc_expenses_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
 
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         target_month = None
         target_year = now().year
-        title_suffix = "(All Time)"
+        title_suffix = "(All Time)" if lang == "en" else "(Todo el Tiempo)"
 
         if context.args:
             arg = context.args[0]
             target_month = self._parse_month(arg)
             if not target_month:
-                await update.message.reply_text(
-                    f"❌ <code>{arg}</code> is not a valid month. Try <code>/calcexpenses january</code>."
-                )
+                await update.message.reply_text(t("calcexpenses_bad_month", lang, arg=html.escape(arg)))
                 return
             month_name = datetime(target_year, target_month, 1).strftime("%B")
             title_suffix = f"({month_name} {target_year})"
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             summary = self._get_data_summary(records, target_month, target_year)
             total_income = summary['total_income']
 
             if total_income <= 0:
-                await update.message.reply_text(
-                    f"No income recorded {title_suffix.lower()}. Cannot calculate budget."
-                )
+                await update.message.reply_text(t("calcexpenses_no_income", lang, period=title_suffix.lower()))
                 return
 
             actual_needs = summary['categories']['Needs']
             actual_wants = summary['categories']['Wants']
             # Net savings: money set aside minus money withdrawn, plus debt payments
             txs = parse_rows(records, target_month, target_year)
-            expense_savings = sum(t.amount for t in txs if t.type == 'Expense' and t.category.lower() == 'savings')
-            income_savings = sum(t.amount for t in txs if t.type == 'Income' and t.category.lower() == 'savings')
+            expense_savings = sum(tx.amount for tx in txs if tx.type == 'Expense' and tx.category.lower() == 'savings')
+            income_savings = sum(tx.amount for tx in txs if tx.type == 'Income' and tx.category.lower() == 'savings')
             actual_savings = expense_savings - income_savings + summary['categories']['Debt']
 
             budget_needs = total_income * Decimal('0.5')
@@ -1393,66 +1424,66 @@ class FinanceBot:
 
             def status_line(actual, budget):
                 if actual > budget:
-                    return f"⚠️ <b>OVER</b> by <code>${actual - budget:,.2f}</code>"
+                    return t("calcexpenses_over", lang, amount=f"{actual - budget:,.2f}")
                 else:
-                    return f"✅ <code>${budget - actual:,.2f}</code> remaining"
+                    return t("calcexpenses_remaining", lang, amount=f"{budget - actual:,.2f}")
 
+            net_fmt = f"{summary['net_worth']:,.2f}"
             response = (
-                f"💰 <b>Budget Status {html.escape(title_suffix)}</b>\n"
-                f"  Income: <code>${total_income:,.2f}</code>\n\n"
-                f"🏠 <b>Needs (50%)</b> — budget <code>${budget_needs:,.2f}</code>\n"
-                f"  Spent: <code>${actual_needs:,.2f}</code> → {status_line(actual_needs, budget_needs)}\n\n"
-                f"🎉 <b>Wants (30%)</b> — budget <code>${budget_wants:,.2f}</code>\n"
-                f"  Spent: <code>${actual_wants:,.2f}</code> → {status_line(actual_wants, budget_wants)}\n\n"
-                f"📈 <b>Savings/Debt (20%)</b> — budget <code>${budget_savings:,.2f}</code>\n"
-                f"  Spent: <code>${actual_savings:,.2f}</code> → {status_line(actual_savings, budget_savings)}\n\n"
-                f"<b>Net Worth</b>: <code>${summary['net_worth']:,.2f}</code>"
+                f"{t('calcexpenses_header', lang, period=html.escape(title_suffix), income=f'{total_income:,.2f}')}\n\n"
+                f"{t('calcexpenses_needs', lang, budget=f'{budget_needs:,.2f}')}\n"
+                f"{t('calcexpenses_spent', lang, spent=f'{actual_needs:,.2f}', status=status_line(actual_needs, budget_needs))}\n\n"
+                f"{t('calcexpenses_wants', lang, budget=f'{budget_wants:,.2f}')}\n"
+                f"{t('calcexpenses_spent', lang, spent=f'{actual_wants:,.2f}', status=status_line(actual_wants, budget_wants))}\n\n"
+                f"{t('calcexpenses_savings', lang, budget=f'{budget_savings:,.2f}')}\n"
+                f"{t('calcexpenses_spent', lang, spent=f'{actual_savings:,.2f}', status=status_line(actual_savings, budget_savings))}\n\n"
+                f"{t('calcexpenses_net', lang, amount=net_fmt)}"
             )
 
             await update.message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Calc Expenses Error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Calc Expenses Error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def savings_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/savings [period] — show money set aside, withdrawn, and current pot."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         month, year, period_desc = parse_period(context.args)
         if period_desc is None:
             await update.message.reply_text(
-                f"❌ Could not understand period: <code>{' '.join(context.args)}</code>\n"
-                "Try: <code>this month</code>, <code>last month</code>, <code>january</code>, <code>january 2025</code>, <code>2025</code>."
+                t("savings_bad_period", lang, period=html.escape(' '.join(context.args)))
             )
             return
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             txs = parse_rows(records, month, year)
 
-            set_aside = sum(t.amount for t in txs if t.type == 'Expense' and t.category.lower() == 'savings')
-            withdrew = sum(t.amount for t in txs if t.type == 'Income' and t.category.lower() == 'savings')
+            set_aside = sum(tx.amount for tx in txs if tx.type == 'Expense' and tx.category.lower() == 'savings')
+            withdrew = sum(tx.amount for tx in txs if tx.type == 'Income' and tx.category.lower() == 'savings')
             pot = set_aside - withdrew
 
             response = (
-                f"📈 <b>Savings — {html.escape(period_desc)}:</b>\n\n"
-                f"  Set aside: <code>${set_aside:,.2f}</code>\n"
-                f"  Withdrew:  <code>${withdrew:,.2f}</code>\n"
-                f"  Pot:       <code>${pot:,.2f}</code>\n\n"
-                f"_To record taking money back out: <code>Income [Account] [Amount] Savings</code>_"
+                f"{t('savings_header', lang, period=html.escape(period_desc))}\n\n"
+                f"{t('savings_set_aside', lang, amount=f'{set_aside:,.2f}')}\n"
+                f"{t('savings_withdrew', lang, amount=f'{withdrew:,.2f}')}\n"
+                f"{t('savings_pot', lang, amount=f'{pot:,.2f}')}\n\n"
+                f"{t('savings_withdrawal_tip', lang)}"
             )
             await update.message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Savings error: {e}")
             corr_id = uuid.uuid4().hex[:8]
-            await update.message.reply_text(f"❌ Something went wrong. Ref: <code>{corr_id}</code>")
+            logger.error(f"[{corr_id}] Savings error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def _error_handler(self, update, context: ContextTypes.DEFAULT_TYPE):
         """Global error handler: logs, notifies admin, replies to user with correlation id."""
@@ -1480,9 +1511,10 @@ class FinanceBot:
     async def summary_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Monthly summary: income, expenses, net, savings rate, category breakdown, and trends."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         now_dt = now()
@@ -1491,9 +1523,7 @@ class FinanceBot:
         if context.args:
             target_month = self._parse_month(context.args[0])
             if not target_month:
-                await update.message.reply_text(
-                    f"❌ <code>{context.args[0]}</code> is not a valid month. Try <code>/summary august</code>."
-                )
+                await update.message.reply_text(t("summary_bad_month", lang, arg=html.escape(context.args[0])))
                 return
         else:
             target_month = now_dt.month
@@ -1517,39 +1547,41 @@ class FinanceBot:
                 return f" {arrow}{abs(pct):.0f}%"
 
             if curr['total_income'] == 0 and curr['total_expenses'] == 0:
-                await update.message.reply_text(f"No records found for {month_name}.")
+                await update.message.reply_text(t("summary_no_records", lang, period=month_name))
                 return
 
             net_emoji = "📈" if curr['net_worth'] >= 0 else "📉"
             savings_emoji = "✅" if curr['savings_rate'] >= 20 else ("⚠️" if curr['savings_rate'] >= 10 else "🔴")
 
-            lines = [f"📋 <b>Summary — {html.escape(month_name)}</b>\n"]
+            lines = [f"{t('summary_header', lang, period=html.escape(month_name))}\n"]
 
-            lines.append(f"💰 <b>Income</b>: <code>${curr['total_income']:,.2f}</code>{trend(curr['total_income'], prev['total_income'])}")
-            lines.append(f"💸 <b>Expenses</b>: <code>${curr['total_expenses']:,.2f}</code>{trend(curr['total_expenses'], prev['total_expenses'])}")
-            lines.append(f"{net_emoji} <b>Net</b>: <code>${curr['net_worth']:,.2f}</code>")
-            lines.append(f"{savings_emoji} <b>Savings rate</b>: <code>{curr['savings_rate']}%</code>{trend(curr['savings_rate'], prev['savings_rate'])}\n")
+            inc_fmt = f"{curr['total_income']:,.2f}"
+            exp_fmt = f"{curr['total_expenses']:,.2f}"
+            lines.append(f"{t('summary_income', lang, amount=inc_fmt)}{trend(curr['total_income'], prev['total_income'])}")
+            lines.append(f"{t('summary_expenses', lang, amount=exp_fmt)}{trend(curr['total_expenses'], prev['total_expenses'])}")
+            lines.append(t("summary_net", lang, emoji=net_emoji, amount=f"{curr['net_worth']:,.2f}"))
+            lines.append(f"{t('summary_savings_rate', lang, emoji=savings_emoji, rate=curr['savings_rate'])}{trend(curr['savings_rate'], prev['savings_rate'])}\n")
 
-            lines.append("<b>By category:</b>")
+            lines.append(t("summary_by_category", lang))
             for cat, amount in curr['categories'].items():
                 if amount > 0 or prev['categories'].get(cat, 0) > 0:
-                    t = trend(amount, prev['categories'].get(cat, 0))
-                    lines.append(f"  • {cat}: <code>${amount:,.2f}</code>{t}")
+                    tr = trend(amount, prev['categories'].get(cat, 0))
+                    lines.append(f"  • {cat}: <code>${amount:,.2f}</code>{tr}")
             if curr['other_expenses'] > 0:
-                lines.append(f"  • Other: <code>${curr['other_expenses']:,.2f}</code>")
+                lines.append(t("summary_other", lang, amount=f"{curr['other_expenses']:,.2f}"))
 
             # Spend forecast — only for current month
             if target_month == now_dt.month and target_year == now_dt.year and curr['total_expenses'] > 0:
                 days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
                 projected = self._spend_forecast(curr['total_expenses'], now_dt.day, days_in_month)
-                lines.append(f"\n📉 <b>Forecast</b>: <code>${projected:,.2f}</code> by month-end")
+                lines.append(t("summary_forecast", lang, amount=f"{projected:,.2f}"))
 
             # Goals snapshot — show if any goals exist
             try:
                 ws = await loop.run_in_executor(None, lambda: self._get_goals_sheet(user_id))
                 goals = await loop.run_in_executor(None, lambda: self._load_goals(ws))
                 if goals:
-                    lines.append("\n🎯 <b>Goals:</b>")
+                    lines.append(t("summary_goals_header", lang))
                     for goal in goals:
                         pct = min((goal['saved'] / goal['target']) * 100, 100) if goal['target'] > 0 else 0
                         bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
@@ -1560,15 +1592,17 @@ class FinanceBot:
             await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
-            logger.error(f"Summary error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Summary error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def top_expenses_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Shows the top 5 individual expenses for the month."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         now_dt = now()
@@ -1577,9 +1611,7 @@ class FinanceBot:
         if context.args:
             target_month = self._parse_month(context.args[0])
             if not target_month:
-                await update.message.reply_text(
-                    f"❌ <code>{context.args[0]}</code> is not a valid month. Try <code>/top august</code>."
-                )
+                await update.message.reply_text(t("top_bad_month", lang, arg=html.escape(context.args[0])))
                 return
         else:
             target_month = now_dt.month
@@ -1587,15 +1619,14 @@ class FinanceBot:
         month_name = datetime(target_year, target_month, 1).strftime("%B %Y")
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             top = self._get_top_expenses(records, target_month, target_year)
 
             if not top:
-                await update.message.reply_text(f"No expenses found for {month_name}.")
+                await update.message.reply_text(t("top_none", lang, period=month_name))
                 return
 
-            lines = [f"🏆 <b>Top Expenses — {html.escape(month_name)}</b>\n"]
+            lines = [f"{t('top_header', lang, period=html.escape(month_name))}\n"]
             medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
             for i, (amount, category, label, count) in enumerate(top):
                 times = f" ×{count}" if count > 1 else ""
@@ -1607,58 +1638,61 @@ class FinanceBot:
             await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
-            logger.error(f"Top expenses error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Top expenses error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def ytd_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Year-to-date summary: total income, expenses, net worth, and savings rate."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         year = now().year
 
         try:
-            loop = asyncio.get_running_loop()
             records = await self._get_all_values(sheet, user_id)
             s = self._get_data_summary(records, year_only=True, target_year=year)
 
             if s['total_income'] == 0 and s['total_expenses'] == 0:
-                await update.message.reply_text(f"No records found for {year}.")
+                await update.message.reply_text(t("ytd_no_records", lang, year=year))
                 return
 
             net_emoji = "📈" if s['net_worth'] >= 0 else "📉"
             savings_emoji = "✅" if s['savings_rate'] >= 20 else ("⚠️" if s['savings_rate'] >= 10 else "🔴")
 
             lines = [
-                f"📅 <b>Year-to-Date — {year}</b>\n",
-                f"💰 <b>Total Income</b>:   <code>${s['total_income']:,.2f}</code>",
-                f"💸 <b>Total Expenses</b>: <code>${s['total_expenses']:,.2f}</code>",
-                f"{net_emoji} <b>Net Worth</b>:      <code>${s['net_worth']:,.2f}</code>",
-                f"{savings_emoji} <b>Savings Rate</b>:   <code>{s['savings_rate']}%</code>\n",
-                "<b>Expenses by category:</b>",
+                f"{t('ytd_header', lang, year=year)}\n",
+                t("ytd_total_income", lang, amount=f"{s['total_income']:,.2f}"),
+                t("ytd_total_expenses", lang, amount=f"{s['total_expenses']:,.2f}"),
+                t("ytd_net_worth", lang, emoji=net_emoji, amount=f"{s['net_worth']:,.2f}"),
+                f"{t('ytd_savings_rate', lang, emoji=savings_emoji, rate=s['savings_rate'])}\n",
+                t("ytd_by_category", lang),
             ]
             for cat, amount in s['categories'].items():
                 if amount > 0:
                     pct = (amount / s['total_expenses'] * 100) if s['total_expenses'] > 0 else 0
                     lines.append(f"  • {cat}: <code>${amount:,.2f}</code> ({pct:.1f}%)")
             if s['other_expenses'] > 0:
-                lines.append(f"  • Other: <code>${s['other_expenses']:,.2f}</code>")
+                lines.append(t("ytd_other", lang, amount=f"{s['other_expenses']:,.2f}"))
 
             await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
-            logger.error(f"YTD error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] YTD error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     async def dashboard_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """One-command financial snapshot: balances + this month's budget + net worth + savings rate."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         now_dt = now()
@@ -1678,46 +1712,46 @@ class FinanceBot:
             score_emoji = "🟢" if score >= 8 else ("🟡" if score >= 5 else "🔴")
 
             lines = [
-                f"📊 <b>Dashboard — {html.escape(month_name)}</b>\n",
-                f"{score_emoji} <b>Health Score: {score}/{max_score}</b> <code>{score_bar}</code>\n"
+                f"{t('dash_header', lang, period=html.escape(month_name))}\n",
+                f"{t('dash_health_score', lang, emoji=score_emoji, score=score, max=max_score, bar=score_bar)}\n"
             ]
 
             # Account balances
-            lines.append("<b>💳 Balances:</b>")
+            lines.append(t("dash_balances", lang))
             if balances:
                 for acc, bal in balances.items():
                     indicator = "🟢" if bal >= 0 else "🔴"
-                    lines.append(f"  {indicator} {acc}: <code>${bal:,.2f}</code>")
+                    lines.append(f"  {indicator} {html.escape(acc)}: <code>${bal:,.2f}</code>")
             else:
-                lines.append("  No transactions yet.")
+                lines.append(t("dash_no_transactions", lang))
 
             # This month budget
-            lines.append("\n<b>📆 This Month:</b>")
+            lines.append(t("dash_this_month", lang))
             if s['total_income'] > 0 or s['total_expenses'] > 0:
                 net_emoji = "📈" if s['net_worth'] >= 0 else "📉"
                 savings_emoji = "✅" if s['savings_rate'] >= 20 else ("⚠️" if s['savings_rate'] >= 10 else "🔴")
-                lines.append(f"  💰 Income:   <code>${s['total_income']:,.2f}</code>")
-                lines.append(f"  💸 Expenses: <code>${s['total_expenses']:,.2f}</code>")
-                lines.append(f"  {net_emoji} Net:      <code>${s['net_worth']:,.2f}</code>")
-                lines.append(f"  {savings_emoji} Savings rate: <code>{s['savings_rate']}%</code>")
+                lines.append(t("dash_income", lang, amount=f"{s['total_income']:,.2f}"))
+                lines.append(t("dash_expenses", lang, amount=f"{s['total_expenses']:,.2f}"))
+                lines.append(t("dash_net", lang, emoji=net_emoji, amount=f"{s['net_worth']:,.2f}"))
+                lines.append(t("dash_savings_rate", lang, emoji=savings_emoji, rate=s['savings_rate']))
 
                 # Budget status (50/30/20)
                 if s['total_income'] > 0:
-                    lines.append("\n<b>📏 50/30/20 Budget:</b>")
+                    lines.append(t("dash_budget_header", lang))
                     _txs = parse_rows(records, now_dt.month, now_dt.year)
-                    _exp_sav = sum(t.amount for t in _txs if t.type == 'Expense' and t.category.lower() == 'savings')
-                    _inc_sav = sum(t.amount for t in _txs if t.type == 'Income' and t.category.lower() == 'savings')
+                    _exp_sav = sum(tx.amount for tx in _txs if tx.type == 'Expense' and tx.category.lower() == 'savings')
+                    _inc_sav = sum(tx.amount for tx in _txs if tx.type == 'Income' and tx.category.lower() == 'savings')
                     net_savings_debt = _exp_sav - _inc_sav + s['categories']['Debt']
                     budgets = {
-                        'Needs': (s['categories']['Needs'], s['total_income'] * Decimal('0.5')),
-                        'Wants': (s['categories']['Wants'], s['total_income'] * Decimal('0.3')),
-                        'Savings/Debt': (net_savings_debt, s['total_income'] * Decimal('0.2')),
+                        t("dash_needs", lang): (s['categories']['Needs'], s['total_income'] * Decimal('0.5')),
+                        t("dash_wants", lang): (s['categories']['Wants'], s['total_income'] * Decimal('0.3')),
+                        t("dash_savings_debt", lang): (net_savings_debt, s['total_income'] * Decimal('0.2')),
                     }
                     for label, (actual, budget) in budgets.items():
                         if actual > budget:
-                            status = f"⚠️ over by <code>${actual - budget:,.2f}</code>"
+                            status = t("dash_budget_over", lang, amount=f"{actual - budget:,.2f}")
                         else:
-                            status = f"✅ <code>${budget - actual:,.2f}</code> left"
+                            status = t("dash_budget_left", lang, amount=f"{budget - actual:,.2f}")
                         lines.append(f"  {label}: {status}")
 
                 # Spend forecast
@@ -1725,18 +1759,19 @@ class FinanceBot:
                 day = now_dt.day
                 if day > 0 and s['total_expenses'] > 0:
                     projected = self._spend_forecast(s['total_expenses'], day, days_in_month)
-                    lines.append(f"\n<b>📉 Forecast:</b>")
-                    lines.append(f"  At current pace: <code>${projected:,.2f}</code> by month-end")
+                    lines.append(t("dash_forecast_header", lang))
+                    lines.append(t("dash_forecast_pace", lang, amount=f"{projected:,.2f}"))
                     if s['total_income'] > 0 and projected > s['total_income']:
-                        lines.append(f"  ⚠️ Projected to exceed income by <code>${projected - s['total_income']:,.2f}</code>")
+                        lines.append(t("dash_forecast_exceed", lang, amount=f"{projected - s['total_income']:,.2f}"))
             else:
-                lines.append("  No transactions this month yet.")
+                lines.append(t("dash_no_month_tx", lang))
 
             await update.message.reply_text("\n".join(lines))
 
         except Exception as e:
-            logger.error(f"Dashboard error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{corr_id}] Dashboard error: {e}")
+            await update.message.reply_text(t("sheet_error", lang, corr_id=corr_id))
 
     # ── Quick-log shortcuts (/ql) ─────────────────────────────────────────────
 
@@ -1748,9 +1783,10 @@ class FinanceBot:
         /ql delete <name>            → remove a shortcut
         """
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         args = context.args
@@ -1760,21 +1796,18 @@ class FinanceBot:
             loop = asyncio.get_running_loop()
             ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
             if not ws:
-                await update.message.reply_text("❌ Could not open shortcuts sheet.")
+                await update.message.reply_text(t("ql_no_sheet", lang))
                 return ConversationHandler.END
             shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
             if not shortcuts:
-                await update.message.reply_text(
-                    "No shortcuts saved yet.\n"
-                    "Add one: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
-                )
+                await update.message.reply_text(t("ql_none_saved", lang))
                 return ConversationHandler.END
             buttons = [
                 [InlineKeyboardButton(f"⚡ {name}", callback_data=f"ql_fire:{name}")]
                 for name in sorted(shortcuts.keys())
             ]
             await update.message.reply_text(
-                "<b>⚡ Quick Log</b> — tap a shortcut:",
+                t("ql_header", lang),
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
             return ConversationHandler.END
@@ -1784,10 +1817,7 @@ class FinanceBot:
         # Add shortcut
         if subcommand == 'add':
             if len(args) < 3:
-                await update.message.reply_text(
-                    "Usage: <code>/ql add <name> <transaction></code>\n"
-                    "Example: <code>/ql add lunch Expense Cash Wants Lunch 15</code>"
-                )
+                await update.message.reply_text(t("ql_add_usage", lang))
                 return
             name = args[1].lower()
             transaction = " ".join(args[2:])
@@ -1795,30 +1825,26 @@ class FinanceBot:
             if '?' not in transaction:
                 rows, _, error = self._parse_transaction_text(transaction, user_id)
                 if error:
-                    await update.message.reply_text(
-                        f"❌ That transaction doesn't parse correctly:\n{error}"
-                    )
+                    await update.message.reply_text(t("ql_add_parse_error", lang, error=error))
                     return
             loop = asyncio.get_running_loop()
             ws = await loop.run_in_executor(None, lambda: self._get_shortcuts_sheet(user_id))
-            shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
+            await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
             # Update or append
             records = await loop.run_in_executor(None, ws.get_all_records)
             for i, r in enumerate(records, start=2):
                 if r.get('Name', '').strip().lower() == name:
                     await loop.run_in_executor(None, lambda: ws.update(f'B{i}', [[transaction]]))
-                    await update.message.reply_text(f"✅ Updated shortcut <code>{name}</code>.")
+                    await update.message.reply_text(t("ql_updated", lang, name=name))
                     return
             await loop.run_in_executor(None, lambda: ws.append_row([name, transaction]))
-            await update.message.reply_text(
-                f"✅ Shortcut saved: <code>/ql {name}</code> → <code>{transaction}</code>"
-            )
+            await update.message.reply_text(t("ql_saved", lang, name=name, transaction=transaction))
             return
 
         # Delete shortcut
         if subcommand == 'delete':
             if len(args) < 2:
-                await update.message.reply_text("Usage: <code>/ql delete <name></code>")
+                await update.message.reply_text(t("ql_delete_usage", lang))
                 return
             name = args[1].lower()
             loop = asyncio.get_running_loop()
@@ -1827,9 +1853,9 @@ class FinanceBot:
             for i, r in enumerate(records, start=2):
                 if r.get('Name', '').strip().lower() == name:
                     await loop.run_in_executor(None, lambda: ws.delete_rows(i))
-                    await update.message.reply_text(f"✅ Deleted shortcut <code>{name}</code>.")
+                    await update.message.reply_text(t("ql_deleted", lang, name=name))
                     return
-            await update.message.reply_text(f"❌ No shortcut named <code>{name}</code>.")
+            await update.message.reply_text(t("ql_not_found", lang, name=name))
             return
 
         # Fire a shortcut by name
@@ -1839,39 +1865,35 @@ class FinanceBot:
         shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
         transaction = shortcuts.get(name)
         if not transaction:
-            await update.message.reply_text(
-                f"❌ No shortcut named <code>{name}</code>. Use <code>/ql</code> to see your list."
-            )
+            await update.message.reply_text(t("ql_not_found_with_hint", lang, name=name))
             return ConversationHandler.END
 
         # If the template has a ? placeholder, ask for the amount
         if '?' in transaction:
             context.user_data['ql_template'] = transaction
             context.user_data['ql_user_id'] = user_id
-            await update.message.reply_text(
-                f"⚡ <b>{name}</b> — enter the amount:"
-            )
+            await update.message.reply_text(t("ql_enter_amount", lang, name=name))
             return QL_AMOUNT
 
         rows, preview, error = self._parse_transaction_text(transaction, user_id)
         if error:
-            await update.message.reply_text(f"❌ Shortcut is broken: {error}")
+            await update.message.reply_text(t("ql_shortcut_broken", lang, error=error))
             return ConversationHandler.END
-        await self._show_preview(update.message, context, rows, preview, sheet)
+        await self._show_preview(update.message, context, rows, preview, sheet, lang)
         return ConversationHandler.END
 
     async def ql_amount_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receives the amount for a ? ql shortcut and shows the preview."""
+        user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         text = update.message.text.strip()
         amount = _parse_amount_strict(text)
         if amount is None:
-            await update.message.reply_text(
-                f"❌ <code>{html.escape(text)}</code> is not a valid amount. Try again."
-            )
+            await update.message.reply_text(t("ql_bad_amount", lang, value=html.escape(text)))
             return QL_AMOUNT
 
         template = context.user_data.get('ql_template', '')
-        user_id = context.user_data.get('ql_user_id', update.message.from_user.id)
+        user_id = context.user_data.get('ql_user_id', user_id)
         transaction = template.replace('?', str(amount), 1)
 
         sheet = self.get_user_sheet(user_id)
@@ -1879,7 +1901,7 @@ class FinanceBot:
         if error:
             await update.message.reply_text(f"❌ {error}")
             return ConversationHandler.END
-        await self._show_preview(update.message, context, rows, preview, sheet)
+        await self._show_preview(update.message, context, rows, preview, sheet, lang)
         return CONFIRM_TRANSACTION
 
     async def ql_fire_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1888,9 +1910,10 @@ class FinanceBot:
         await query.answer()
         name = query.data.replace('ql_fire:', '', 1)
         user_id = query.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await query.edit_message_text("❌ Unauthorized.")
+            await query.edit_message_text(t("unauthorized", lang))
             return
 
         loop = asyncio.get_running_loop()
@@ -1898,38 +1921,39 @@ class FinanceBot:
         shortcuts = await loop.run_in_executor(None, lambda: self._load_shortcuts(ws))
         transaction = shortcuts.get(name)
         if not transaction:
-            await query.edit_message_text(f"❌ Shortcut <code>{html.escape(name)}</code> not found.")
+            await query.edit_message_text(t("ql_not_found", lang, name=html.escape(name)))
             return
 
         if '?' in transaction:
             context.user_data['ql_template'] = transaction
             context.user_data['ql_user_id'] = user_id
-            await query.edit_message_text(f"⚡ <b>{html.escape(name)}</b> — enter the amount:")
+            await query.edit_message_text(t("ql_enter_amount", lang, name=html.escape(name)))
             # The ql_amount_conv ConversationHandler will pick up the next message
             return
 
         rows, preview, error = self._parse_transaction_text(transaction, user_id)
         if error:
-            await query.edit_message_text(f"❌ Shortcut is broken: {error}")
+            await query.edit_message_text(t("ql_shortcut_broken", lang, error=error))
             return
-        await self._show_preview(query.message, context, rows, preview, sheet)
+        await self._show_preview(query.message, context, rows, preview, sheet, lang)
 
     # ── Guided /log flow ──────────────────────────────────────────────────────
 
     async def log_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Entry point for the guided /log flow."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if not self.get_user_sheet(user_id):
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return ConversationHandler.END
         context.user_data['log_entry'] = {}
         keyboard = [
-            [InlineKeyboardButton("💸 Expense", callback_data='log_Expense'),
-             InlineKeyboardButton("💰 Income", callback_data='log_Income')],
-            [InlineKeyboardButton("↔️ Transfer", callback_data='log_Transfer')]
+            [InlineKeyboardButton(t("log_btn_expense", lang), callback_data='log_Expense'),
+             InlineKeyboardButton(t("log_btn_income", lang), callback_data='log_Income')],
+            [InlineKeyboardButton(t("log_btn_transfer", lang), callback_data='log_Transfer')]
         ]
         await update.message.reply_text(
-            "What type of transaction?",
+            t("log_what_type", lang),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return LOG_TYPE
@@ -1938,6 +1962,7 @@ class FinanceBot:
         query = update.callback_query
         await query.answer()
         trans_type = query.data.replace('log_', '')
+        lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['type'] = trans_type
 
         # Fetch known accounts to offer as quick buttons
@@ -1946,7 +1971,6 @@ class FinanceBot:
         known_accounts = []
         if sheet:
             try:
-                loop = asyncio.get_running_loop()
                 records = await self._get_all_values(sheet, user_id)
                 known_accounts = self._get_known_accounts(records)
             except Exception:
@@ -1955,50 +1979,53 @@ class FinanceBot:
         if known_accounts:
             buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
             await query.edit_message_text(
-                f"<b>{trans_type}</b> — Which account?",
+                t("log_which_account_buttons", lang, type=html.escape(trans_type)),
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         else:
-            await query.edit_message_text(f"<b>{trans_type}</b> — Type the account name:")
+            await query.edit_message_text(t("log_which_account_text", lang, type=html.escape(trans_type)))
         return LOG_ACCOUNT
 
     async def log_account_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         account = query.data.replace('acc_', '')
+        lang = self._user_lang(query.from_user.id, context)
         e = context.user_data['log_entry']
         if e.get('transfer_step') == 'to_account':
             e['to_account'] = account
             e.pop('transfer_step', None)
             await query.edit_message_text(
-                f"From: <b>{e['account']}</b> → To: <b>{account}</b>\n\nAdd a description? (or tap Skip)",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+                t("log_transfer_confirmed", lang, from_acc=html.escape(e['account']), to_acc=html.escape(account)),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
             )
             return LOG_DESCRIPTION
         e['account'] = account
-        await query.edit_message_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
+        await query.edit_message_text(t("log_account_confirmed", lang, account=html.escape(account)))
         return LOG_AMOUNT
 
     async def log_account(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         account = update.message.text.strip().capitalize()
+        lang = self._user_lang(update.message.from_user.id, context)
         e = context.user_data['log_entry']
         if e.get('transfer_step') == 'to_account':
             e['to_account'] = account
             e.pop('transfer_step', None)
             await update.message.reply_text(
-                f"From: <b>{e['account']}</b> → To: <b>{account}</b>\n\nAdd a description? (or tap Skip)",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+                t("log_transfer_confirmed", lang, from_acc=html.escape(e['account']), to_acc=html.escape(account)),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
             )
             return LOG_DESCRIPTION
         e['account'] = account
-        await update.message.reply_text(f"Account: <b>{account}</b>\n\nEnter the amount:")
+        await update.message.reply_text(t("log_account_confirmed", lang, account=html.escape(account)))
         return LOG_AMOUNT
 
     async def log_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
+        lang = self._user_lang(update.message.from_user.id, context)
         amount = _parse_amount_strict(text)
         if amount is None:
-            await update.message.reply_text(f"❌ <code>{html.escape(text)}</code> is not a valid amount. Try again.")
+            await update.message.reply_text(t("log_bad_amount", lang, value=html.escape(text)))
             return LOG_AMOUNT
 
         context.user_data['log_entry']['amount'] = amount
@@ -2019,46 +2046,47 @@ class FinanceBot:
             if known_accounts:
                 buttons = [[InlineKeyboardButton(a, callback_data=f'acc_{a}')] for a in known_accounts[:6]]
                 await update.message.reply_text(
-                    "Transfer to which account?",
+                    t("log_transfer_to_account", lang),
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
             else:
-                await update.message.reply_text("Transfer to which account?")
+                await update.message.reply_text(t("log_transfer_to_account", lang))
             return LOG_ACCOUNT
 
         if trans_type == 'Expense':
             keyboard = [
-                [InlineKeyboardButton("🏠 Needs", callback_data='cat_Needs'),
-                 InlineKeyboardButton("🎉 Wants", callback_data='cat_Wants')],
-                [InlineKeyboardButton("📈 Savings", callback_data='cat_Savings'),
-                 InlineKeyboardButton("💳 Debt", callback_data='cat_Debt')]
+                [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
+                 InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
+                [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
+                 InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')]
             ]
             await update.message.reply_text(
-                f"Amount: *${amount:,.2f}*\n\nSelect a category:",
+                t("log_select_category", lang, amount=f"{amount:,.2f}"),
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return LOG_CATEGORY
         else:
             # Income — skip category, go to description
             context.user_data['log_entry']['category'] = 'Income'
-            return await self._log_ask_description(update.message, context, amount)
+            return await self._log_ask_description(update.message, context, amount, lang)
 
     async def log_category_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         category = query.data.replace('cat_', '')
+        lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['category'] = category
         amount = context.user_data['log_entry']['amount']
         await query.edit_message_text(
-            f"Category: <b>{category}</b>\n\nAdd a description? (or tap Skip)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+            t("log_category_confirmed", lang, category=html.escape(category)),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
 
-    async def _log_ask_description(self, message, context, amount):
+    async def _log_ask_description(self, message, context, amount, lang: str = "en"):
         await message.reply_text(
-            f"Amount: <b>${amount:,.2f}</b>\n\nAdd a description? (or tap Skip)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data='desc_skip')]])
+            t("log_ask_description", lang, amount=f"{amount:,.2f}"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_skip", lang), callback_data='desc_skip')]])
         )
         return LOG_DESCRIPTION
 
@@ -2066,14 +2094,16 @@ class FinanceBot:
         """Handles the Skip button for description."""
         query = update.callback_query
         await query.answer()
+        lang = self._user_lang(query.from_user.id, context)
         context.user_data['log_entry']['description'] = ''
-        return await self._log_build_and_preview(query, context)
+        return await self._log_build_and_preview(query, context, lang)
 
     async def log_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        lang = self._user_lang(update.message.from_user.id, context)
         context.user_data['log_entry']['description'] = update.message.text.strip()
-        return await self._log_build_and_preview(update.message, context)
+        return await self._log_build_and_preview(update.message, context, lang)
 
-    async def _log_build_and_preview(self, message_or_query, context):
+    async def _log_build_and_preview(self, message_or_query, context, lang: str = "en"):
         """Assembles the transaction string from collected log_entry data and shows preview."""
         e = context.user_data['log_entry']
         trans_type = e['type']
@@ -2102,7 +2132,7 @@ class FinanceBot:
             msg = message_or_query.message
         else:
             msg = message_or_query
-        return await self._show_preview(msg, context, rows, preview, sheet)
+        return await self._show_preview(msg, context, rows, preview, sheet, lang)
 
     # ── Recurring transactions ────────────────────────────────────────────────
 
@@ -2113,8 +2143,9 @@ class FinanceBot:
         /recurring delete <name>           → remove one
         """
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if not self.get_user_sheet(user_id):
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         args = context.args
@@ -2124,17 +2155,13 @@ class FinanceBot:
             ws = await loop.run_in_executor(None, lambda: self._get_recurring_sheet(user_id))
             items = await loop.run_in_executor(None, lambda: self._load_recurring(ws))
             if not items:
-                await update.message.reply_text(
-                    "No recurring transactions set up.\n\n"
-                    "Add one: <code>/recurring add rent 1 Expense Cash Needs Rent 1500</code>\n"
-                    "<i>(This would log rent on the 1st of each month)</i>"
-                )
+                await update.message.reply_text(t("recurring_none", lang))
                 return
-            lines = ["🔄 <b>Recurring Transactions:</b>\n"]
+            lines = [f"{t('recurring_header', lang)}\n"]
             for item in items:
-                day_str = f"Day {item['day']}"
-                last = f"last: {item['last_logged']}" if item['last_logged'] else "never logged"
-                lines.append(f"  • <b>{item['name']}</b> — {day_str} — <code>{item['transaction']}</code> _({last})_")
+                day_str = t("recurring_day", lang, day=item['day'])
+                last = t("recurring_last", lang, date=item['last_logged']) if item['last_logged'] else t("recurring_never", lang)
+                lines.append(f"  • <b>{html.escape(item['name'])}</b> — {day_str} — <code>{html.escape(item['transaction'])}</code> _({last})_")
             await update.message.reply_text("\n".join(lines))
             return
 
@@ -2142,10 +2169,7 @@ class FinanceBot:
 
         if subcommand == 'add':
             if len(args) < 4:
-                await update.message.reply_text(
-                    "Usage: <code>/recurring add <name> <day> <transaction></code>\n"
-                    "Example: <code>/recurring add rent 1 Expense Cash Needs Rent 1500</code>"
-                )
+                await update.message.reply_text(t("recurring_add_usage", lang))
                 return
             name = args[1]
             try:
@@ -2153,23 +2177,21 @@ class FinanceBot:
                 if not 1 <= day <= 31:
                     raise ValueError
             except ValueError:
-                await update.message.reply_text("❌ Day must be a number between 1 and 31.")
+                await update.message.reply_text(t("recurring_bad_day", lang))
                 return
             transaction = " ".join(args[3:])
             _, _, error = self._parse_transaction_text(transaction, user_id)
             if error:
-                await update.message.reply_text(f"❌ Transaction doesn't parse:\n{error}")
+                await update.message.reply_text(t("recurring_bad_tx", lang, error=error))
                 return
             ws = await loop.run_in_executor(None, lambda: self._get_recurring_sheet(user_id))
             await loop.run_in_executor(None, lambda: ws.append_row([name, transaction, day, ""]))
-            await update.message.reply_text(
-                f"✅ Added: <b>{name}</b> will auto-log on day <b>{day}</b> of each month."
-            )
+            await update.message.reply_text(t("recurring_added", lang, name=html.escape(name), day=day))
             return
 
         if subcommand == 'delete':
             if len(args) < 2:
-                await update.message.reply_text("Usage: <code>/recurring delete <name></code>")
+                await update.message.reply_text(t("recurring_delete_usage", lang))
                 return
             name = args[1].lower()
             ws = await loop.run_in_executor(None, lambda: self._get_recurring_sheet(user_id))
@@ -2177,9 +2199,9 @@ class FinanceBot:
             for item in items:
                 if item['name'].lower() == name:
                     await loop.run_in_executor(None, lambda: ws.delete_rows(item['row_index']))
-                    await update.message.reply_text(f"✅ Deleted recurring: <b>{item['name']}</b>.")
+                    await update.message.reply_text(t("recurring_deleted", lang, name=html.escape(item['name'])))
                     return
-            await update.message.reply_text(f"❌ No recurring transaction named <code>{args[1]}</code>.")
+            await update.message.reply_text(t("recurring_not_found", lang, name=html.escape(args[1])))
 
     async def _recurring_job(self, context):
         """Runs daily at 9am: logs any recurring transactions due today for all users."""
@@ -2221,12 +2243,11 @@ class FinanceBot:
                     await loop.run_in_executor(None, lambda: ws.update_cell(item['row_index'], 4, today_str))
 
                     row = rows[0]
+                    lang = context.bot_data.get('user_lang', {}).get(str(user_id), 'en')
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=(
-                            f"🔄 <b>Recurring logged:</b> <i>{item['name']}</i>\n"
-                            f"  <code>{item['transaction']}</code>"
-                        )
+                        text=t("recurring_auto_logged", lang,
+                               name=item['name'], transaction=item['transaction'])
                     )
                     logger.info(f"Logged recurring '{item['name']}' for user {user_id}")
 
@@ -2238,19 +2259,17 @@ class FinanceBot:
     async def setgoal_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/setgoal <name> <amount> — create or update a savings goal."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if not self.get_user_sheet(user_id):
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
         if len(context.args) < 2:
-            await update.message.reply_text(
-                "Usage: <code>/setgoal <name> <amount></code>\n"
-                "Example: <code>/setgoal vacation 2000</code>"
-            )
+            await update.message.reply_text(t("setgoal_usage", lang))
             return
         name = context.args[0]
         target = _parse_amount_strict(context.args[1])
         if target is None:
-            await update.message.reply_text(f"❌ <code>{html.escape(context.args[1])}</code> is not a valid amount.")
+            await update.message.reply_text(t("setgoal_bad_amount", lang, value=html.escape(context.args[1])))
             return
 
         loop = asyncio.get_running_loop()
@@ -2261,32 +2280,27 @@ class FinanceBot:
             if goal['name'].lower() == name.lower():
                 await loop.run_in_executor(None, lambda: ws.update_cell(goal['row_index'], 2, target))
                 await update.message.reply_text(
-                    f"✅ Updated goal <b>{goal['name']}</b>: target set to <code>${target:,.2f}</code>."
+                    t("setgoal_updated", lang, name=html.escape(goal['name']), amount=f"{target:,.2f}")
                 )
                 return
 
         await loop.run_in_executor(None, lambda: ws.append_row([name, target, 0]))
-        await update.message.reply_text(
-            f"🎯 Goal created: <b>{name}</b> — <code>${target:,.2f}</code>\n"
-            f"Use <code>/addtogoal {name} <amount></code> to track your progress."
-        )
+        await update.message.reply_text(t("setgoal_created", lang, name=html.escape(name), amount=f"{target:,.2f}"))
 
     async def addtogoal_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/addtogoal <name> <amount> — add savings to a goal."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if not self.get_user_sheet(user_id):
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
         if len(context.args) < 2:
-            await update.message.reply_text(
-                "Usage: <code>/addtogoal <name> <amount></code>\n"
-                "Example: <code>/addtogoal vacation 200</code>"
-            )
+            await update.message.reply_text(t("addtogoal_usage", lang))
             return
         name = context.args[0]
         amount = _parse_amount_strict(context.args[1])
         if amount is None:
-            await update.message.reply_text(f"❌ <code>{html.escape(context.args[1])}</code> is not a valid amount.")
+            await update.message.reply_text(t("addtogoal_bad_amount", lang, value=html.escape(context.args[1])))
             return
 
         loop = asyncio.get_running_loop()
@@ -2299,23 +2313,23 @@ class FinanceBot:
                 await loop.run_in_executor(None, lambda: ws.update_cell(goal['row_index'], 3, new_saved))
                 pct = min((new_saved / goal['target']) * 100, 100) if goal['target'] > 0 else 0
                 bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
-                done = "🎉 <b>Goal reached!</b>" if new_saved >= goal['target'] else ""
+                done = t("addtogoal_reached", lang) if new_saved >= goal['target'] else ""
+                target_fmt = f"{goal['target']:,.2f}"
                 await update.message.reply_text(
-                    f"✅ Added <code>${amount:,.2f}</code> to <b>{goal['name']}</b>\n"
+                    f"{t('addtogoal_success', lang, amount=f'{amount:,.2f}', name=html.escape(goal['name']))}\n"
                     f"<code>{bar}</code> {pct:.1f}%\n"
-                    f"Saved: <code>${new_saved:,.2f}<code> / </code>${goal['target']:,.2f}</code>\n{done}"
+                    f"{t('addtogoal_saved_of', lang, saved=f'{new_saved:,.2f}', target=target_fmt)}\n{done}"
                 )
                 return
 
-        await update.message.reply_text(
-            f"❌ No goal named <code>{name}</code>. Create one with <code>/setgoal {name} <amount></code>."
-        )
+        await update.message.reply_text(t("addtogoal_not_found", lang, name=html.escape(name)))
 
     async def goals_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/goals — show all savings goals with progress."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         if not self.get_user_sheet(user_id):
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         loop = asyncio.get_running_loop()
@@ -2323,21 +2337,19 @@ class FinanceBot:
         goals = await loop.run_in_executor(None, lambda: self._load_goals(ws))
 
         if not goals:
-            await update.message.reply_text(
-                "No goals yet. Create one: <code>/setgoal vacation 2000</code>"
-            )
+            await update.message.reply_text(t("goals_none", lang))
             return
 
-        lines = ["🎯 <b>Your Goals:</b>\n"]
+        lines = [f"{t('goals_header', lang)}\n"]
         for goal in goals:
             pct = min((goal['saved'] / goal['target']) * 100, 100) if goal['target'] > 0 else 0
             bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
             remaining = max(goal['target'] - goal['saved'], 0)
-            status = "✅ Done!" if goal['saved'] >= goal['target'] else f"<code>${remaining:,.2f}</code> to go"
+            status = t("goals_done", lang) if goal['saved'] >= goal['target'] else t("goals_to_go", lang, amount=f"{remaining:,.2f}")
             lines.append(
-                f"<b>{goal['name']}</b>\n"
+                f"<b>{html.escape(goal['name'])}</b>\n"
                 f"<code>{bar}</code> {pct:.1f}%\n"
-                f"  <code>${goal['saved']:,.2f}<code> / </code>${goal['target']:,.2f}</code> — {status}\n"
+                f"  <code>${goal['saved']:,.2f}</code> / <code>${goal['target']:,.2f}</code> — {status}\n"
             )
         await update.message.reply_text("\n".join(lines))
 
@@ -2346,28 +2358,30 @@ class FinanceBot:
     async def undo_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/undo — remove the most recently logged transaction."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
-        await self._do_undo(update.message, user_id, sheet)
+        await self._do_undo(update.message, user_id, sheet, lang)
 
     async def undo_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles the ↩️ Undo button on the confirmation message."""
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await query.edit_message_text("❌ Could not reach your sheet.")
+            await query.edit_message_text(t("undo_could_not_reach", lang))
             return
-        await self._do_undo(query, user_id, sheet)
+        await self._do_undo(query, user_id, sheet, lang)
 
-    async def _do_undo(self, message_or_query, user_id, sheet):
+    async def _do_undo(self, message_or_query, user_id, sheet, lang: str = "en"):
         """Core undo: scans from bottom for an exact-value match and deletes that row."""
         last_rows = self.application.bot_data.get('last_rows', {}).get(str(user_id))
         if not last_rows:
-            text = "Nothing to undo — no recent transaction found for this session."
+            text = t("undo_nothing", lang)
             if hasattr(message_or_query, 'edit_message_text'):
                 await message_or_query.edit_message_text(text)
             else:
@@ -2385,7 +2399,7 @@ class FinanceBot:
                     break
 
             if row_idx is None:
-                text = "↩️ The transaction no longer exists in the sheet (already deleted?)."
+                text = t("undo_gone", lang)
                 if hasattr(message_or_query, 'edit_message_text'):
                     await message_or_query.edit_message_text(text)
                 else:
@@ -2408,7 +2422,9 @@ class FinanceBot:
             self.application.bot_data.setdefault('last_rows', {}).pop(str(user_id), None)
 
             row = last_rows[0]
-            text = f"↩️ Undone: {row[1]} <b>{html.escape(row[2])}</b> <code>${_parse_amount(row[3]):,.2f}</code> {html.escape(row[4])}"
+            text = t("undo_success", lang,
+                     type=html.escape(row[1]), account=html.escape(row[2]),
+                     amount=f"{_parse_amount(row[3]):,.2f}", category=html.escape(row[4]))
             if hasattr(message_or_query, 'edit_message_text'):
                 await message_or_query.edit_message_text(text)
             else:
@@ -2416,7 +2432,7 @@ class FinanceBot:
         except Exception as e:
             corr_id = uuid.uuid4().hex[:8]
             logger.error(f"[{corr_id}] Undo error: {e}", exc_info=True)
-            text = f"❌ Undo failed. Reference: <code>{corr_id}</code>"
+            text = t("undo_failed", lang, corr_id=corr_id)
             if hasattr(message_or_query, 'edit_message_text'):
                 await message_or_query.edit_message_text(text)
             else:
@@ -2427,9 +2443,10 @@ class FinanceBot:
     async def recent_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/recent [n] — show the last n transactions (default 10)."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         n = 10
@@ -2446,10 +2463,10 @@ class FinanceBot:
             recent = txs[-n:][::-1]  # last n, newest first
 
             if not recent:
-                await update.message.reply_text("No transactions found.")
+                await update.message.reply_text(t("recent_none", lang))
                 return
 
-            lines = [f"🕐 <b>Last {len(recent)} transactions:</b>\n"]
+            lines = [f"{t('recent_header', lang, n=len(recent))}\n"]
             for row in recent:
                 date_obj = _parse_date(row[0])
                 date_s = date_obj.strftime("%b %d") if date_obj else row[0][:10]
@@ -2466,23 +2483,22 @@ class FinanceBot:
 
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
-            await self._reply_error(update.message, e, "Could not fetch recent transactions")
+            await self._reply_error(update.message, e, t("recent_error", lang))
 
     # ── 5.3 Category buttons (used by _parse_transaction_text fallback) ────────
     # (Implemented inline in preview_transaction — see _show_category_keyboard)
 
-    async def _show_category_keyboard(self, message, context, partial_tx, trans_type):
+    async def _show_category_keyboard(self, message, context, partial_tx, trans_type, lang: str = "en"):
         """Show inline category buttons when strict user omits/misspells category."""
-        allowed = ['Needs', 'Wants', 'Savings', 'Debt']
         keyboard = [
-            [InlineKeyboardButton("🏠 Needs", callback_data='cat_Needs'),
-             InlineKeyboardButton("🎉 Wants", callback_data='cat_Wants')],
-            [InlineKeyboardButton("📈 Savings", callback_data='cat_Savings'),
-             InlineKeyboardButton("💳 Debt", callback_data='cat_Debt')],
+            [InlineKeyboardButton(t("btn_needs", lang), callback_data='cat_Needs'),
+             InlineKeyboardButton(t("btn_wants", lang), callback_data='cat_Wants')],
+            [InlineKeyboardButton(t("btn_savings", lang), callback_data='cat_Savings'),
+             InlineKeyboardButton(t("btn_debt", lang), callback_data='cat_Debt')],
         ]
         context.user_data['pending_cat_tx'] = partial_tx
         await message.reply_text(
-            f"Which category? ({trans_type})",
+            t("log_category_which", lang, type=html.escape(trans_type)),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -2491,12 +2507,13 @@ class FinanceBot:
         query = update.callback_query
         await query.answer()
         category = query.data.replace('cat_', '')
+        user_id = query.from_user.id
+        lang = self._user_lang(user_id, context)
         partial_tx = context.user_data.pop('pending_cat_tx', None)
         if not partial_tx:
-            await query.edit_message_text("❌ Session expired. Please re-enter the transaction.")
+            await query.edit_message_text(t("session_expired", lang))
             return ConversationHandler.END
 
-        user_id = query.from_user.id
         full_tx = f"{partial_tx} {category}"
         rows, preview, error = self._parse_transaction_text(full_tx, user_id)
         if error:
@@ -2505,24 +2522,25 @@ class FinanceBot:
 
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await query.edit_message_text("❌ Could not reach your sheet.")
+            await query.edit_message_text(t("could_not_reach_sheet", lang))
             return ConversationHandler.END
 
         await query.edit_message_text(preview)
-        return await self._show_preview(query.message, context, rows, preview, sheet)
+        return await self._show_preview(query.message, context, rows, preview, sheet, lang)
 
     # ── 5.4 Monthly summary push ────────────────────────────────────────────────
 
     async def quiet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/quiet — toggle monthly push notifications on/off."""
         user_id = str(update.message.from_user.id)
+        lang = self._user_lang(user_id, context)
         quiet_set = context.bot_data.setdefault('quiet_users', set())
         if user_id in quiet_set:
             quiet_set.discard(user_id)
-            await update.message.reply_text("🔔 Monthly summaries re-enabled. Use /quiet again to turn them off.")
+            await update.message.reply_text(t("quiet_disabled", lang))
         else:
             quiet_set.add(user_id)
-            await update.message.reply_text("🔕 Monthly summaries disabled. Use /quiet again to re-enable.")
+            await update.message.reply_text(t("quiet_enabled", lang))
 
     async def _monthly_summary_job(self, context):
         """Job: send each user last month's summary on the 1st at 09:00."""
@@ -2555,16 +2573,20 @@ class FinanceBot:
                 withdrew = sum(t.amount for t in txs if t.type == 'Income' and t.category.lower() == 'savings')
                 pot = set_aside - withdrew
 
+                lang = context.bot_data.get('user_lang', {}).get(user_id_str, 'en')
                 net_emoji = "📈" if s['net_worth'] >= 0 else "📉"
                 savings_emoji = "✅" if s['savings_rate'] >= 20 else ("⚠️" if s['savings_rate'] >= 10 else "🔴")
+                push_inc = f"{s['total_income']:,.2f}"
+                push_exp = f"{s['total_expenses']:,.2f}"
+                push_net = f"{s['net_worth']:,.2f}"
                 msg = (
-                    f"📅 <b>Monthly Summary — {html.escape(month_name)}</b>\n\n"
-                    f"💰 Income:   <code>${s['total_income']:,.2f}</code>\n"
-                    f"💸 Expenses: <code>${s['total_expenses']:,.2f}</code>\n"
-                    f"{net_emoji} Net:      <code>${s['net_worth']:,.2f}</code>\n"
-                    f"{savings_emoji} Savings rate: <code>{s['savings_rate']}%</code>\n\n"
-                    f"🏦 Savings pot: <code>${pot:,.2f}</code>\n\n"
-                    f"<i>Use /quiet to turn off these monthly summaries.</i>"
+                    f"{t('monthly_push_header', lang, period=html.escape(month_name))}\n\n"
+                    f"{t('monthly_push_income', lang, amount=push_inc)}\n"
+                    f"{t('monthly_push_expenses', lang, amount=push_exp)}\n"
+                    f"{t('monthly_push_net', lang, emoji=net_emoji, amount=push_net)}\n"
+                    f"{t('monthly_push_rate', lang, emoji=savings_emoji, rate=s['savings_rate'])}\n\n"
+                    f"{t('monthly_push_pot', lang, amount=f'{pot:,.2f}')}\n\n"
+                    f"{t('monthly_push_footer', lang)}"
                 )
                 await context.bot.send_message(chat_id=int(user_id_str), text=msg)
             except Exception as e:
@@ -2575,9 +2597,10 @@ class FinanceBot:
     async def trend_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/trend [months] — income vs expenses line chart for last n months."""
         user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
         sheet = self.get_user_sheet(user_id)
         if not sheet:
-            await update.message.reply_text("❌ Unauthorized.")
+            await update.message.reply_text(t("unauthorized", lang))
             return
 
         n_months = 6
@@ -2606,18 +2629,18 @@ class FinanceBot:
             for y, m in periods:
                 s = self._get_data_summary(records, m, y)
                 txs = parse_rows(records, m, y)
-                set_aside = sum(t.amount for t in txs if t.type == 'Expense' and t.category.lower() == 'savings')
-                withdrew = sum(t.amount for t in txs if t.type == 'Income' and t.category.lower() == 'savings')
+                set_aside = sum(tx.amount for tx in txs if tx.type == 'Expense' and tx.category.lower() == 'savings')
+                withdrew = sum(tx.amount for tx in txs if tx.type == 'Income' and tx.category.lower() == 'savings')
                 incomes.append(float(s['total_income']))
                 expenses.append(float(s['total_expenses']))
                 savings_pots.append(float(set_aside - withdrew))
                 labels.append(datetime(y, m, 1).strftime("%b %y"))
 
             fig, ax = plt.subplots(figsize=(8, 4))
-            ax.plot(labels, incomes, marker='o', label='Income', color='#66b3ff')
-            ax.plot(labels, expenses, marker='o', label='Expenses', color='#ff9999')
-            ax.plot(labels, savings_pots, marker='s', linestyle='--', label='Savings pot', color='#99ff99')
-            ax.set_title(f'Trend — last {n_months} months')
+            ax.plot(labels, incomes, marker='o', label=t("trend_chart_income", lang), color='#66b3ff')
+            ax.plot(labels, expenses, marker='o', label=t("trend_chart_expenses", lang), color='#ff9999')
+            ax.plot(labels, savings_pots, marker='s', linestyle='--', label=t("trend_chart_savings", lang), color='#99ff99')
+            ax.set_title(t("trend_chart_title", lang, n=n_months))
             ax.legend()
             ax.tick_params(axis='x', rotation=45)
             plt.tight_layout()
@@ -2627,9 +2650,9 @@ class FinanceBot:
             buf.seek(0)
             plt.close(fig)
 
-            await update.message.reply_photo(photo=buf, caption=f"📈 Trend — last {n_months} months")
+            await update.message.reply_photo(photo=buf, caption=t("trend_caption", lang, n=n_months))
         except Exception as e:
-            await self._reply_error(update.message, e, "Could not generate trend chart")
+            await self._reply_error(update.message, e, t("trend_error", lang))
 
     async def start(self):
         await self.application.initialize()
