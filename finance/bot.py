@@ -878,10 +878,14 @@ class FinanceBot:
         return rows, preview, None
 
     def _insert_row(self, sheet, row_data):
-        sheet.append_row(row_data, table_range='A1')
+        all_vals = sheet.get_all_values()
+        next_row = len(all_vals) + 1
+        sheet.update(f'A{next_row}', [row_data])
 
     def _insert_rows(self, sheet, rows_data):
-        sheet.append_rows(rows_data, table_range='A1')
+        all_vals = sheet.get_all_values()
+        next_row = len(all_vals) + 1
+        sheet.update(f'A{next_row}', rows_data)
 
     async def _write_rows(self, sheet, rows_data: list, user_id) -> None:
         """Append rows with retry (429 only) and cache invalidation."""
