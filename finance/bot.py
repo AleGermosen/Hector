@@ -1,5 +1,6 @@
 import ast as _ast
 import html
+import httpx
 import logging
 import asyncio
 import random
@@ -53,6 +54,7 @@ COMMANDS = [
     ("setgoal",       "Create or update a savings goal"),
     ("addtogoal",     "Add savings to a goal"),
     # Misc
+    ("exchange",      "USD ↔ RD$ converter with live rate — e.g. /exchange 100"),
     ("calc",          "Calculator — e.g. /calc 5 * 2"),
     ("quiet",         "Toggle monthly summary push notifications"),
     ("start",         "Check your authorization"),
@@ -322,6 +324,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('help', self.help_cmd))
         self.application.add_handler(CommandHandler('balance', self.calculate_balance))
         self.application.add_handler(CommandHandler('calc', self.calculator))
+        self.application.add_handler(CommandHandler('exchange', self.exchange_cmd))
         self.application.add_handler(CommandHandler('expenses', self.generate_expenses_chart))
         self.application.add_handler(CommandHandler('net', self.calculate_net_worth))
         self.application.add_handler(CommandHandler('calcexpenses', self.calc_expenses_budget))
@@ -1055,7 +1058,7 @@ class FinanceBot:
             "📝 Logging": ["log", "ql", "undo", "recent", "recurring"],
             "📊 Reports": ["dash", "summary", "balance", "top", "ytd", "net", "expenses", "calcexpenses", "savings", "trend"],
             "🎯 Goals": ["goals", "setgoal", "addtogoal"],
-            "⚙️ Misc": ["calc", "quiet", "start", "help", "cancel"],
+            "⚙️ Misc": ["exchange", "calc", "quiet", "start", "help", "cancel"],
         }
         cmd_map = {name: desc for name, desc in COMMANDS}
         lines = [
@@ -1112,6 +1115,54 @@ class FinanceBot:
             await update.message.reply_text(f"❌ {html.escape(str(e))}")
         except Exception:
             await update.message.reply_text("❌ Invalid expression.")
+
+    async def exchange_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /exchange [amount] [rd]
+        Default: USD → RD$  (most common)
+        Add 'rd' flag to reverse: RD$ → USD
+        Example: /exchange 100      → $100 USD → RD$XXXX
+                 /exchange 5000 rd  → RD$5000  → $XX.XX USD
+        """
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "Usage:\n"
+                "  <code>/exchange 100</code> — convert $100 USD → RD$\n"
+                "  <code>/exchange 5000 rd</code> — convert RD$5000 → USD"
+            )
+            return
+
+        try:
+            amount = Decimal(args[0].replace(',', ''))
+        except InvalidOperation:
+            await update.message.reply_text(f"❌ <code>{html.escape(args[0])}</code> is not a valid amount.")
+            return
+
+        to_rd = len(args) < 2 or args[1].lower() not in ('rd', 'rdp', 'dop', 'peso', 'pesos')
+
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.get("https://open.er-api.com/v6/latest/USD")
+                resp.raise_for_status()
+                data = resp.json()
+            rate = Decimal(str(data['rates']['DOP']))
+        except Exception:
+            await update.message.reply_text("❌ Could not fetch exchange rate. Try again in a moment.")
+            return
+
+        if to_rd:
+            result = amount * rate
+            await update.message.reply_text(
+                f"💱 <b>${amount:,.2f} USD → RD${result:,.2f}</b>\n"
+                f"<i>Live rate: RD${rate:,.4f} per $1 USD</i>"
+            )
+        else:
+            result = amount / rate
+            await update.message.reply_text(
+                f"💱 <b>RD${amount:,.2f} → ${result:,.2f} USD</b>\n"
+                f"<i>Live rate: RD${rate:,.4f} per $1 USD</i>"
+            )
 
     async def generate_expenses_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
