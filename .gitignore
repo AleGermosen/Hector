@@ -5,7 +5,11 @@
 # Configuration files with sensitive data
 config.py
 credentials.json
+project-bea-credentials.json
 
 # Python cache
 __pycache__/
 *.pyc
+
+# Heroku single-file build artifact (tracked for deployment)
+# main_heroku.py
