@@ -1,4 +1,4 @@
-python-telegram-bot
-gspread
-oauth2client
-matplotlib
+python-telegram-bot[job-queue]~=22.6
+gspread~=6.2
+matplotlib~=3.10
+tzdata~=2026.1
