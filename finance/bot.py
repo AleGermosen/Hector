@@ -351,9 +351,13 @@ class FinanceBot:
         self.application.add_handler(CallbackQueryHandler(self.undo_callback, pattern='^undo_last$'))
         self.application.add_handler(CallbackQueryHandler(self.category_button_callback, pattern='^cat_'))
 
-        # Guided logging flow: /log
+        # Guided logging flow: /log and keyboard "Guided Log" button
+        _guided_log_filter = filters.Regex(r'^(📝 Guided Log|📝 Registro Guiado)$')
         log_conv = ConversationHandler(
-            entry_points=[CommandHandler('log', self.log_start)],
+            entry_points=[
+                CommandHandler('log', self.log_start),
+                MessageHandler(_guided_log_filter & ~filters.COMMAND, self.log_start),
+            ],
             states={
                 LOG_TYPE:        [CallbackQueryHandler(self.log_type_callback)],
                 LOG_ACCOUNT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, self.log_account),
@@ -975,18 +979,7 @@ class FinanceBot:
             else:
                 await update.message.reply_text(t("ql_none_saved", lang))
             return ConversationHandler.END
-        if text in (t("btn_guided_log", "en"), t("btn_guided_log", "es")):
-            context.user_data['log_entry'] = {}
-            keyboard = [
-                [InlineKeyboardButton(t("log_btn_expense", lang), callback_data='log_Expense'),
-                 InlineKeyboardButton(t("log_btn_income", lang), callback_data='log_Income')],
-                [InlineKeyboardButton(t("log_btn_transfer", lang), callback_data='log_Transfer')]
-            ]
-            await update.message.reply_text(
-                t("log_what_type", lang),
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return LOG_TYPE
+
 
         sheet = self.get_user_sheet(user_id)
 
