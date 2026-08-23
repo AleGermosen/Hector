@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # ── Command registry — single source of truth for menu and /help ──────────────
 COMMANDS = [
+    # Balance first
+    ("balance",       "Current account balances"),
     # Logging
     ("log",           "Step-by-step guided transaction entry"),
     ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
@@ -43,7 +45,6 @@ COMMANDS = [
     # Reports
     ("dash",          "Full snapshot: balances, budget, savings rate"),
     ("summary",       "This month's income, expenses, net & trends"),
-    ("balance",       "Current account balances"),
     ("top",           "Top 5 expenses this month"),
     ("ytd",           "Year-to-date totals and savings rate"),
     ("net",           "Net worth breakdown with chart"),
