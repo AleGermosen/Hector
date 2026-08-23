@@ -34,9 +34,10 @@ logger = logging.getLogger(__name__)
 
 # ── Command registry — single source of truth for menu and /help ──────────────
 COMMANDS = [
-    # Balance & dashboard first
+    # Balance, dashboard, help first
     ("balance",       "Current account balances"),
     ("dash",          "Full snapshot: balances, budget, savings rate"),
+    ("help",          "Show this command list"),
     # Logging
     ("log",           "Step-by-step guided transaction entry"),
     ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
@@ -62,7 +63,6 @@ COMMANDS = [
     ("quiet",         "Toggle monthly summary push notifications"),
     ("lang",          "Switch language — /lang en or /lang es"),
     ("start",         "Check your authorization"),
-    ("help",          "Show this command list"),
     ("cancel",        "Cancel the current operation"),
 ]
 
