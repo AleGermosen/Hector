@@ -63,6 +63,7 @@ COMMANDS = [
     ("calc",          "Calculator — e.g. /calc 5 * 2"),
     ("quiet",         "Toggle monthly summary push notifications"),
     ("lang",          "Switch language — /lang en or /lang es"),
+    ("checksheet",    "Verify sheet connection and column layout"),
     ("start",         "Check your authorization"),
 ]
 
@@ -343,6 +344,7 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('goals', self.goals_cmd))
         self.application.add_handler(CommandHandler('addtogoal', self.addtogoal_cmd))
         self.application.add_handler(CommandHandler('cancel', self.cancel_transaction))
+        self.application.add_handler(CommandHandler('checksheet', self.checksheet_cmd))
         self.application.add_handler(CommandHandler('recent', self.recent_cmd))
         self.application.add_handler(CommandHandler('undo', self.undo_cmd))
         self.application.add_handler(CommandHandler('trend', self.trend_cmd))
@@ -1096,6 +1098,52 @@ class FinanceBot:
             [[KeyboardButton(t("btn_quick_log", lang)), KeyboardButton(t("btn_guided_log", lang))]],
             resize_keyboard=True,
         )
+
+    async def checksheet_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/checksheet — verify sheet connection and column layout."""
+        user_id = update.message.from_user.id
+        lang = self._user_lang(user_id, context)
+        sheet = self.get_user_sheet(user_id)
+        if not sheet:
+            await update.message.reply_text("❌ Could not connect to your sheet. Check that your user ID is in USER_SHEET_MAPPING and the sheet name matches exactly." if lang == "en"
+                                            else "❌ No se pudo conectar con tu hoja. Verifica que tu ID esté en USER_SHEET_MAPPING y que el nombre coincida exactamente.")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            all_rows = await loop.run_in_executor(None, sheet.get_all_values)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Connected but failed to read rows: <code>{html.escape(str(e))}</code>")
+            return
+
+        EXPECTED = ["A: Date", "B: Type", "C: Account", "D: Amount", "E: Category", "F: Description"]
+
+        lines = ["✅ <b>Sheet connected</b>" if lang == "en" else "✅ <b>Hoja conectada</b>", ""]
+
+        if not all_rows:
+            lines.append("⚠️ Sheet is empty — no rows found. It will work once you log a transaction." if lang == "en"
+                         else "⚠️ La hoja está vacía. Funcionará en cuanto registres una transacción.")
+        else:
+            first = all_rows[0]
+            lines.append(("<b>First row (used as column reference):</b>" if lang == "en" else "<b>Primera fila (referencia de columnas):</b>"))
+            for i, label in enumerate(EXPECTED):
+                val = html.escape(first[i].strip()) if i < len(first) else "—"
+                lines.append(f"  {label} → <code>{val}</code>")
+
+            total = len(all_rows)
+            valid = sum(1 for r in all_rows if len(r) > 1 and r[1].strip().capitalize() in ('Income', 'Expense', 'Transfer'))
+            lines += [
+                "",
+                f"📄 Total rows: <b>{total}</b>",
+                f"✅ Readable transactions: <b>{valid}</b>",
+            ]
+
+            if total > 0 and valid == 0:
+                lines.append("")
+                lines.append("⚠️ No valid transactions found. Make sure column B contains <b>Income</b>, <b>Expense</b>, or <b>Transfer</b>." if lang == "en"
+                             else "⚠️ No se encontraron transacciones válidas. Asegúrate de que la columna B tenga <b>Income</b>, <b>Expense</b> o <b>Transfer</b>.")
+
+        await update.message.reply_text("\n".join(lines))
 
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.message.from_user.id
