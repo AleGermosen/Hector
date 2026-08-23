@@ -349,7 +349,6 @@ class FinanceBot:
         self.application.add_handler(CommandHandler('lang', self.lang_cmd))
         self.application.add_handler(CallbackQueryHandler(self.undo_callback, pattern='^undo_last$'))
         self.application.add_handler(CallbackQueryHandler(self.category_button_callback, pattern='^cat_'))
-        self.application.add_handler(CallbackQueryHandler(self.ql_fire_callback, pattern='^ql_fire:'))
 
         # Guided logging flow: /log
         log_conv = ConversationHandler(
@@ -371,7 +370,10 @@ class FinanceBot:
 
         # QL shortcut with variable amount (? placeholder)
         ql_amount_conv = ConversationHandler(
-            entry_points=[CommandHandler('ql', self.quicklog_cmd)],
+            entry_points=[
+                CommandHandler('ql', self.quicklog_cmd),
+                CallbackQueryHandler(self.ql_fire_callback, pattern='^ql_fire:'),
+            ],
             states={
                 QL_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.ql_amount_input)],
                 CONFIRM_TRANSACTION: [CallbackQueryHandler(self.confirm_transaction_callback)],
@@ -1928,14 +1930,14 @@ class FinanceBot:
             context.user_data['ql_template'] = transaction
             context.user_data['ql_user_id'] = user_id
             await query.edit_message_text(t("ql_enter_amount", lang, name=html.escape(name)))
-            # The ql_amount_conv ConversationHandler will pick up the next message
-            return
+            return QL_AMOUNT
 
         rows, preview, error = self._parse_transaction_text(transaction, user_id)
         if error:
             await query.edit_message_text(t("ql_shortcut_broken", lang, error=error))
-            return
+            return ConversationHandler.END
         await self._show_preview(query.message, context, rows, preview, sheet, lang)
+        return CONFIRM_TRANSACTION
 
     # ── Guided /log flow ──────────────────────────────────────────────────────
 
