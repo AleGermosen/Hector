@@ -1139,13 +1139,38 @@ class FinanceBot:
             ("  Delete: <code>/ql delete lunch</code>" if lang == "en" else "  Eliminar: <code>/ql delete almuerzo</code>"),
             "",
         ]
+        if lang == "en":
+            accounts_lines = [
+                "🏦 <b>Accounts</b>",
+                "  Accounts are created automatically the first time you use a new name in a transaction.",
+                "  <code>Expense Cash Needs Coffee 3</code>  ← creates <b>Cash</b> if new",
+                "  To remove an account, delete its transactions from your Google Sheet.",
+                "",
+                "🏷️ <b>Categories</b>",
+                "  Fixed expense categories: <b>Needs</b>, <b>Wants</b>, <b>Savings</b>, <b>Debt</b>",
+                "  Income uses <b>Salary</b> by default. Add a description for more detail.",
+                "",
+            ]
+        else:
+            accounts_lines = [
+                "🏦 <b>Cuentas</b>",
+                "  Las cuentas se crean automáticamente la primera vez que usas un nombre nuevo en una transacción.",
+                "  <code>Expense Efectivo Needs Café 3</code>  ← crea <b>Efectivo</b> si es nuevo",
+                "  Para eliminar una cuenta, borra sus transacciones en tu Google Sheet.",
+                "",
+                "🏷️ <b>Categorías</b>",
+                "  Categorías de gasto fijas: <b>Needs</b>, <b>Wants</b>, <b>Savings</b>, <b>Debt</b>",
+                "  Los ingresos usan <b>Salary</b> por defecto. Agrega una descripción para más detalle.",
+                "",
+            ]
+
         lines = [
             t("help_format_header", lang),
             "<code>Expense Cash Needs Lunch 15.50</code>",
             "<code>Income Digital Salary 2000</code>",
             "<code>Transfer Digital to Cash 1500</code>",
             "",
-        ] + ql_lines
+        ] + ql_lines + accounts_lines
         for section, names in sections.items():
             lines.append(f"<b>{section}</b>")
             for name in names:
