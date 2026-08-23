@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 # ── Command registry — single source of truth for menu and /help ──────────────
 COMMANDS = [
-    # Balance first
+    # Balance & dashboard first
     ("balance",       "Current account balances"),
+    ("dash",          "Full snapshot: balances, budget, savings rate"),
     # Logging
     ("log",           "Step-by-step guided transaction entry"),
     ("ql",            "Quick-log shortcuts (list / fire / add / delete)"),
@@ -43,7 +44,6 @@ COMMANDS = [
     ("recent",        "Show last N transactions (default 10)"),
     ("recurring",     "Manage recurring monthly transactions"),
     # Reports
-    ("dash",          "Full snapshot: balances, budget, savings rate"),
     ("summary",       "This month's income, expenses, net & trends"),
     ("top",           "Top 5 expenses this month"),
     ("ytd",           "Year-to-date totals and savings rate"),
@@ -1134,13 +1134,25 @@ class FinanceBot:
                          "goals", "setgoal", "addtogoal", "exchange", "calc", "quiet", "lang",
                          "start", "help", "cancel"]
         }
+        ql_header = "⚡ <b>Quick Log shortcuts</b>" if lang == "en" else "⚡ <b>Atajos de registro rápido</b>"
+        ql_lines = [
+            ql_header,
+            ("  Save a shortcut:" if lang == "en" else "  Guardar un atajo:"),
+            "  <code>/ql add lunch Expense Cash Wants Lunch 15</code>",
+            ("  Use <code>?</code> as a variable amount:" if lang == "en" else "  Usar <code>?</code> como monto variable:"),
+            "  <code>/ql add gas Expense Cash Needs Gas ?</code>",
+            ("  Fire it: tap ⚡ in <code>/ql</code>, or type <code>/ql lunch</code>" if lang == "en"
+             else "  Ejecutarlo: toca ⚡ en <code>/ql</code>, o escribe <code>/ql almuerzo</code>"),
+            ("  Delete: <code>/ql delete lunch</code>" if lang == "en" else "  Eliminar: <code>/ql delete almuerzo</code>"),
+            "",
+        ]
         lines = [
             t("help_format_header", lang),
             "<code>Expense Cash Needs Lunch 15.50</code>",
             "<code>Income Digital Salary 2000</code>",
             "<code>Transfer Digital to Cash 1500</code>",
             "",
-        ]
+        ] + ql_lines
         for section, names in sections.items():
             lines.append(f"<b>{section}</b>")
             for name in names:
